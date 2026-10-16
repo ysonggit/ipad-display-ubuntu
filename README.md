@@ -10,7 +10,7 @@ iPad 端**无需安装任何 App**,只用 Safari。完整原理与图文说明�
 ```bash
 sudo apt install python3-gi gir1.2-gst-plugins-base-1.0 python3-gst-1.0 \
   gstreamer1.0-pipewire gstreamer1.0-plugins-good gstreamer1.0-plugins-base qrencode
-./ipad-display --size 2048x1536 --scale 2
+./ipad-display --position left
 ```
 
 **第一次(配对,不用打字):**
@@ -39,15 +39,29 @@ sudo apt install python3-gi gir1.2-gst-plugins-base-1.0 python3-gst-1.0 \
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
-| `--size` | `1600x1200` | 虚拟显示器像素,iPad 为 4:3,原生 `2048x1536` |
+| `--size` | `auto` | `auto`:自动匹配 iPad 屏幕比例(消除黑边);或固定 `宽x高`,如 `2048x1536` |
+| `--max-edge` | `1600` | auto 模式下长边像素,越大越清晰但越吃性能 |
+| `--position` | `right` | iPad 屏幕在内置屏幕的 `left` / `right` / `above` / `below` |
 | `--scale` | `1` | GNOME 界面缩放,`2` 为 HiDPI |
-| `--fps` | `30` | 最大帧率 |
+| `--fps` | `30` | 最大帧率(在 Mutter 一侧限流,减轻合成器负担) |
 | `--quality` | `75` | JPEG 质量 1–100 |
 | `--port` | `8800` | HTTP 端口;`80` 可省略端口号,需先 `sudo sysctl net.ipv4.ip_unprivileged_port_start=80` |
 | `--cookie-days` | `90` | 配对有效天数 |
 | `--list-devices` | | 列出已配对设备并退出 |
 | `--forget` | | 取消所有设备配对并退出 |
 | `--no-pairing` | | 关闭认证(仅限可信网络) |
+
+## 屏幕位置与黑边
+
+- GNOME 42 的“设置 → 显示器”不能拖动这块虚拟屏幕,所以用 `--position left|right|above|below` 指定位置。
+- 默认 `--size auto`:iPad 打开页面后会上报自己的可视区域,脚本据此重建虚拟显示器,使比例与 iPad 一致(旋转屏幕也会自动调整),比例会记在 `~/.config/ipad-display/size.json`。
+- 为了没有黑边,请用「添加到主屏幕」的图标打开(全屏),不要在带地址栏的 Safari 标签里用。
+- 想要更清晰:`./ipad-display --max-edge 2048 --scale 2`(GNOME 界面 2 倍缩放,等效 1024 宽)。
+
+## 性能与稳定
+
+- 帧率在 Mutter 一侧限制(`max-framerate`),并在颜色转换之前丢帧;触摸移动事件按显示帧合并,避免淹没合成器。
+- 如果仍然卡顿:降低 `--max-edge` / `--fps` / `--quality`,或改用 USB 连接。
 
 ## USB 有线连接
 

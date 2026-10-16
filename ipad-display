@@ -29,18 +29,32 @@ def log(*a):
     print("[ipad-display]", *a, flush=True)
 
 
+CFG_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "ipad-display")
+SIZE_FILE = os.path.join(CFG_DIR, "size.json")
+
+
+def fit_size(edge, vw, vh):
+    """Monitor size with the viewport's aspect ratio and the given long edge (multiples of 8)."""
+    r = min(vw, vh) / max(vw, vh)
+    a, b = edge, max(64, int(round(edge * r / 8)) * 8)
+    return (a, b) if vw >= vh else (b, a)
+
+
 class Display:
     """Virtual monitor + GStreamer encoder + input injection."""
 
-    def __init__(self, width, height, fps, quality, scale):
+    def __init__(self, width, height, fps, quality, scale, position="right", auto=False, edge=1600):
         self.w, self.h, self.fps, self.quality, self.scale = width, height, fps, quality, scale
+        self.position, self.auto, self.edge = position, auto, edge
         self.bus = Gio.bus_get_sync(Gio.BusType.SESSION)
-        self.rd_session = self.sc_session = self.stream = None
+        self.rd_session = self.sc_session = self.stream = self.sub = None
         self.frame = None
         self.cond = threading.Condition()
         self.seq = 0
         self.loop = GLib.MainLoop()
         self.pipeline = None
+        self.refit_timer = None
+        self.restarting = False
 
     def _call(self, name, path, iface, method, args, rtype):
         return self.bus.call_sync(name, path, iface, method, args,
@@ -58,30 +72,32 @@ class Display:
         r = self._call(SC, self.sc_session, SC + ".Session", "RecordVirtual",
                        GLib.Variant("(a{sv})", ({"cursor-mode": GLib.Variant("u", 1)},)), "(o)")
         self.stream = r[0]
-        self.bus.signal_subscribe(SC, SC + ".Stream", "PipeWireStreamAdded", self.stream,
-                                  None, Gio.DBusSignalFlags.NONE, self._on_node)
+        self.sub = self.bus.signal_subscribe(SC, SC + ".Stream", "PipeWireStreamAdded", self.stream,
+                                             None, Gio.DBusSignalFlags.NONE, self._on_node)
         self._call(RD, self.rd_session, RD + ".Session", "Start", None, "()")
+        self.restarting = False
 
     def _on_node(self, _c, _s, _p, _i, _sig, params):
         node = params[0]
-        log(f"PipeWire node {node}, requesting {self.w}x{self.h}")
-        desc = (f"pipewiresrc path={node} do-timestamp=true ! "
-                f"video/x-raw,width={self.w},height={self.h} ! videoconvert name=cv ! "
-                                f"jpegenc quality={self.quality} ! "
+        log(f"PipeWire node {node}, requesting {self.w}x{self.h} @ max {self.fps} fps")
+        # max-framerate makes Mutter itself throttle: it only reads back (and sends) <= fps frames
+        # per second.  Frames are also dropped *before* videoconvert so a late burst costs nothing.
+        desc = (f"pipewiresrc name=src path={node} do-timestamp=true ! "
+                f"video/x-raw,width={self.w},height={self.h},max-framerate={self.fps}/1 ! "
+                "videoconvert n-threads=2 ! "
+                f"jpegenc quality={self.quality} ! "
                 "appsink name=sink emit-signals=true max-buffers=1 drop=true sync=false")
         self.pipeline = Gst.parse_launch(desc)
         self._last = 0.0
-        self.pipeline.get_by_name("cv").get_static_pad("src").add_probe(
+        self.pipeline.get_by_name("src").get_static_pad("src").add_probe(
             Gst.PadProbeType.BUFFER, self._throttle)
-        sink = self.pipeline.get_by_name("sink")
-        sink.connect("new-sample", self._on_sample)
+        self.pipeline.get_by_name("sink").connect("new-sample", self._on_sample)
         self.pipeline.set_state(Gst.State.PLAYING)
-        if self.scale != 1:
-            GLib.timeout_add(1500, self._apply_scale)
+        GLib.timeout_add(1500, self._apply_layout)
 
     def _throttle(self, _pad, _info):
         now = time.monotonic()
-        if now - self._last < 1.0 / self.fps:
+        if now - self._last < 0.9 / self.fps:
             return Gst.PadProbeReturn.DROP
         self._last = now
         return Gst.PadProbeReturn.OK
@@ -98,30 +114,98 @@ class Display:
                 self.cond.notify_all()
         return Gst.FlowReturn.OK
 
-    def _apply_scale(self):
-        """Give the virtual monitor a HiDPI scale (e.g. 2 for a Retina iPad)."""
+    def _apply_layout(self):
+        """Place the virtual monitor (left/right/above/below) and give it a HiDPI scale."""
+        if self.position == "right" and self.scale == 1:
+            return False
         try:
             st = self._call(DC, "/org/gnome/Mutter/DisplayConfig", DC, "GetCurrentState", None, None)
-            serial, monitors, logicals = st[0], st[1], st[2]
-            cur = {}
+            serial, monitors, logicals, props = st[0], st[1], st[2], st[3]
+            phys = props.get("layout-mode", 1) == 2
+            cur, dim = {}, {}
             for spec, modes, _ in monitors:
                 for m in modes:
                     if m[6].get("is-current"):
-                        cur[spec[0]] = m[0]
-            new = []
+                        cur[spec[0]], dim[spec[0]] = m[0], (m[1], m[2])
+            items, virt = [], None
             for x, y, sc, tr, prim, specs, _ in logicals:
-                is_virtual = any(s[0].startswith("Meta-") for s in specs)
-                new.append((x, y, float(self.scale) if is_virtual else sc, tr, prim,
-                            [(s[0], cur[s[0]], {}) for s in specs]))
+                is_v = any(s[0].startswith("Meta-") for s in specs)
+                sc = float(self.scale) if is_v else sc
+                w, h = dim[specs[0][0]]
+                if tr in (1, 3, 5, 7):
+                    w, h = h, w
+                if not phys:
+                    w, h = w / sc, h / sc
+                it = [x, y, sc, tr, prim, [(s[0], cur[s[0]], {}) for s in specs], int(w), int(h)]
+                items.append(it)
+                if is_v:
+                    virt = it
+            if virt is None:
+                return False
+            others = [i for i in items if i is not virt]
+            vw, vh = virt[6], virt[7]
+            if others:
+                minx, miny = min(i[0] for i in others), min(i[1] for i in others)
+                maxx, maxy = max(i[0] + i[6] for i in others), max(i[1] + i[7] for i in others)
+                pos = self.position
+                if pos == "right":
+                    virt[0], virt[1] = maxx, miny
+                elif pos == "below":
+                    virt[0], virt[1] = minx, maxy
+                elif pos == "left":
+                    for i in others:
+                        i[0] += vw
+                    virt[0], virt[1] = minx, miny
+                elif pos == "above":
+                    for i in others:
+                        i[1] += vh
+                    virt[0], virt[1] = minx, miny
+            new = [(i[0], i[1], i[2], i[3], i[4], i[5]) for i in items]
             self._call(DC, "/org/gnome/Mutter/DisplayConfig", DC, "ApplyMonitorsConfig",
                        GLib.Variant("(uua(iiduba(ssa{sv}))a{sv})", (serial, 1, new, {})), None)
-            log(f"virtual monitor scale set to {self.scale}")
+            log(f"virtual monitor: {self.position} of the built-in display, scale {self.scale}")
         except Exception as e:
-            log("could not set scale:", e)
+            log("could not arrange the monitor:", e)
+        return False
+
+    # --- fit the monitor to the iPad's viewport --------------------------
+    def request_fit(self, vw, vh):
+        """Called (from any thread) when the iPad reports its viewport size."""
+        if not self.auto or vw < 100 or vh < 100:
+            return
+        GLib.idle_add(self._schedule_fit, float(vw), float(vh))
+
+    def _schedule_fit(self, vw, vh):
+        tw, th = fit_size(self.edge, vw, vh)
+        if abs((tw / th) / (self.w / self.h) - 1) < 0.03:
+            if self.refit_timer:
+                GLib.source_remove(self.refit_timer)
+                self.refit_timer = None
+            return False
+        if self.refit_timer:
+            GLib.source_remove(self.refit_timer)
+        self.refit_timer = GLib.timeout_add(1200, self._refit, tw, th)  # debounce rotation / bars
+        return False
+
+    def _refit(self, tw, th):
+        self.refit_timer = None
+        log(f"iPad viewport is {tw}x{th} shaped: recreating the virtual monitor (was {self.w}x{self.h})")
+        self.restarting = True
+        self.teardown()
+        self.w, self.h = tw, th
+        try:
+            os.makedirs(CFG_DIR, mode=0o700, exist_ok=True)
+            with open(SIZE_FILE, "w") as f:
+                json.dump({"w": tw, "h": th}, f)
+        except OSError:
+            pass
+        GLib.timeout_add(800, lambda: (self.start(), False)[1])
         return False
 
     # --- input -----------------------------------------------------------
     def _notify(self, method, fmt, args):
+        if not self.rd_session or self.restarting:
+            return
         self.bus.call(RD, self.rd_session, RD + ".Session", method,
                       GLib.Variant(fmt, args), None, Gio.DBusCallFlags.NO_AUTO_START, -1, None, None, None)
 
@@ -134,16 +218,24 @@ class Display:
             self._notify("NotifyPointerButton", "(ib)", (BTN.get(m.get("b", 0), 0x110), t == "d"))
         elif t == "s":
             self._notify("NotifyPointerAxis", "(ddu)", (float(m.get("dx", 0)), float(m.get("dy", 0)), 0))
+        elif t == "v":
+            self.request_fit(float(m["w"]), float(m["h"]))
 
-    def stop(self):
+    def teardown(self):
         if self.pipeline:
             self.pipeline.set_state(Gst.State.NULL)
-        for path, iface in ((self.rd_session, RD + ".Session"),):
-            try:
-                if path:
-                    self._call(RD, path, iface, "Stop", None, "()")
-            except Exception:
-                pass
+            self.pipeline = None
+        if self.sub is not None:
+            self.bus.signal_unsubscribe(self.sub)
+            self.sub = None
+        path, self.rd_session = self.rd_session, None
+        try:
+            if path:
+                self._call(RD, path, RD + ".Session", "Stop", None, "()")
+        except Exception:
+            pass
+
+    stop = teardown
 
 
 PAGE = r"""<!doctype html><html><head><meta charset=utf-8>
@@ -161,18 +253,25 @@ const v=document.getElementById('v'), st=document.getElementById('s');
 v.src='/stream';
 let ws;
 function open(){ws=new WebSocket((location.protocol=='https:'?'wss://':'ws://')+location.host+'/ws');
- ws.onopen=()=>{st.textContent='connected';setTimeout(()=>st.style.display='none',1500)};
+ ws.onopen=()=>{st.textContent='connected';setTimeout(()=>st.style.display='none',1500);view()};
  ws.onclose=()=>{st.style.display='';st.textContent='reconnecting…';
   fetch('/ping',{cache:'no-store'}).then(r=>{if(r.status==401)location.reload()}).catch(()=>{});
   setTimeout(open,1000)}}
 open();
-const send=o=>ws&&ws.readyState==1&&ws.send(JSON.stringify(o));
+const raw=o=>ws&&ws.readyState==1&&ws.send(JSON.stringify(o));
+let pend=null,raf=0,sdx=0,sdy=0,vt=null;
+function flush(){raf=0;if(pend){raw({t:'m',...pend});pend=null}if(sdx||sdy){raw({t:'s',dx:sdx,dy:sdy});sdx=sdy=0}}
+const send=o=>{flush();raw(o)};
+const later=()=>{if(!raf)raf=requestAnimationFrame(flush)};
+function view(){raw({t:'v',w:innerWidth,h:innerHeight})}
+addEventListener('resize',()=>{clearTimeout(vt);vt=setTimeout(view,800)});
+addEventListener('orientationchange',()=>{clearTimeout(vt);vt=setTimeout(view,800)});
 function norm(e){ // map client coords to the letterboxed image rect
  const W=v.naturalWidth||1,H=v.naturalHeight||1,cw=innerWidth,ch=innerHeight,s=Math.min(cw/W,ch/H);
  const w=W*s,h=H*s,ox=(cw-w)/2,oy=(ch-h)/2;
  return{x:Math.min(1,Math.max(0,(e.clientX-ox)/w)),y:Math.min(1,Math.max(0,(e.clientY-oy)/h))}}
 const P=new Map();let mode='idle',down=false,lp=null,origin=null,last2=null;
-const mv=e=>send({t:'m',...norm(e)});
+const mv=e=>{pend=norm(e);later()};
 function cancelLP(){clearTimeout(lp);lp=null}
 function release(){if(down){send({t:'u',b:0});down=false}}
 addEventListener('pointerdown',e=>{e.preventDefault();P.set(e.pointerId,e);
@@ -184,7 +283,7 @@ addEventListener('pointermove',e=>{if(!P.has(e.pointerId))return;e.preventDefaul
   cancelLP();mode='drag';mv(origin);send({t:'d',b:0});down=true}
  if(mode=='drag')mv(e);
  else if(mode=='scroll'&&P.size>=2){const a=[...P.values()],cy=(a[0].clientY+a[1].clientY)/2,cx=(a[0].clientX+a[1].clientX)/2;
-  if(last2){send({t:'s',dx:-(cx-last2.x)*1.5,dy:-(cy-last2.y)*1.5})}last2={x:cx,y:cy}}},{passive:false});
+  if(last2){sdx+=-(cx-last2.x)*1.5;sdy+=-(cy-last2.y)*1.5;later()}last2={x:cx,y:cy}}},{passive:false});
 function end(e){if(!P.has(e.pointerId))return;P.delete(e.pointerId);cancelLP();
  if(mode=='pending'){send({t:'d',b:0});send({t:'u',b:0})}
  else if(mode=='drag')release();
@@ -467,10 +566,14 @@ def show_pairing(pairing, port):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--size", default="1600x1200", help="virtual monitor pixels, 4:3 for iPad (default %(default)s; "
-                    "iPad native is 2048x1536)")
+    ap.add_argument("--size", default="auto", help="'auto' (default): match the iPad's screen shape, long edge "
+                    "--max-edge; or fixed WxH pixels, e.g. 2048x1536")
+    ap.add_argument("--max-edge", type=int, default=1600, help="long edge in pixels for --size auto (default %(default)s; "
+                    "bigger = sharper but heavier)")
+    ap.add_argument("--position", default="right", choices=("left", "right", "above", "below"),
+                    help="where the iPad monitor sits relative to the built-in display (default %(default)s)")
     ap.add_argument("--scale", type=int, default=1, choices=(1, 2), help="GNOME UI scale for the iPad monitor (2 = HiDPI)")
-    ap.add_argument("--fps", type=int, default=30)
+    ap.add_argument("--fps", type=int, default=30, help="max frames per second (default %(default)s)")
     ap.add_argument("--quality", type=int, default=75, help="JPEG quality 1-100 (default %(default)s)")
     ap.add_argument("--port", type=int, default=8800, help="HTTP port; 80 gives a bare http://host.local URL "
                     "(needs: sudo sysctl net.ipv4.ip_unprivileged_port_start=80)")
@@ -492,13 +595,24 @@ def main():
         print(f"forgot {n} device(s)")
         return
 
-    w, h = (int(x) for x in a.size.lower().split("x"))
+    auto = a.size.lower() == "auto"
+    if auto:
+        try:
+            with open(SIZE_FILE) as f:
+                d = json.load(f)
+            w, h = int(d["w"]), int(d["h"])
+            if max(w, h) != a.max_edge:
+                w, h = fit_size(a.max_edge, w, h)
+        except (OSError, ValueError, KeyError):
+            w, h = fit_size(a.max_edge, 4, 3)
+    else:
+        w, h = (int(x) for x in a.size.lower().split("x"))
     try:
         srv = ThreadingHTTPServer(("0.0.0.0", a.port), make_handler(None, pairing))
     except PermissionError:
         sys.exit(f"cannot bind port {a.port}; run: sudo sysctl net.ipv4.ip_unprivileged_port_start={a.port}")
     Gst.init(None)
-    disp = Display(w, h, a.fps, a.quality, a.scale)
+    disp = Display(w, h, a.fps, a.quality, a.scale, a.position, auto, a.max_edge)
     srv.RequestHandlerClass = make_handler(disp, pairing)
     disp.start()
     srv.daemon_threads = True
