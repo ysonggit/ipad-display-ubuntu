@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ipad-display-ubuntu 说明</title>
+<style>
+:root{--bg:#fff;--fg:#1d1d1f;--mute:#6e6e73;--card:#f5f5f7;--acc:#0a6cff;--code:#eef0f4}
+@media(prefers-color-scheme:dark){:root{--bg:#111;--fg:#f2f2f2;--mute:#a0a0a8;--card:#1c1c1e;--acc:#5aa2ff;--code:#26262a}}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.7 -apple-system,"PingFang SC","Noto Sans CJK SC",sans-serif}
+main{max-width:860px;margin:0 auto;padding:32px 16px 64px}
+h1{font-size:2rem;margin:.2em 0}h2{margin-top:2em;border-bottom:1px solid var(--code);padding-bottom:.3em}
+p.sub{color:var(--mute)}
+pre,code{background:var(--code);border-radius:6px;font-family:ui-monospace,Menlo,monospace;font-size:.9em}
+code{padding:.1em .35em}pre{padding:12px 14px;overflow-x:auto}pre code{padding:0;background:none}
+table{border-collapse:collapse;width:100%}th,td{border:1px solid var(--code);padding:6px 10px;text-align:left}
+.card{background:var(--card);border-radius:12px;padding:14px 18px;margin:12px 0}
+.flow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:16px 0}
+.flow div{background:var(--card);border:1px solid var(--code);border-radius:10px;padding:8px 12px;font-size:.9em;text-align:center}
+.flow span{color:var(--mute)}
+a{color:var(--acc)}
+</style></head><body><main>
+<h1>ipad-display-ubuntu</h1>
+<p class="sub">在 Ubuntu 22.04 (GNOME / Wayland) 上把 iPad 变成第二块显示器,类似 macOS 的 Sidecar。iPad 端只需要 Safari。</p>
+
+<h2>1. 它是怎么工作的</h2>
+<p>Wayland 下没有 xrandr 那种“虚拟输出”的办法,所以脚本直接向 GNOME 的合成器 Mutter 申请一块<strong>真正的虚拟显示器</strong>。GNOME 会把它当作普通屏幕:你可以把窗口拖过去,也可以在“设置 → 显示器”里调整位置、缩放。</p>
+<div class="flow">
+<div>Mutter<br>RecordVirtual</div><span>→</span>
+<div>PipeWire<br>视频流</div><span>→</span>
+<div>GStreamer<br>JPEG 编码</div><span>→</span>
+<div>HTTP<br>MJPEG</div><span>→</span>
+<div>iPad Safari</div>
+</div>
+<div class="flow">
+<div>iPad 触摸</div><span>→</span>
+<div>WebSocket</div><span>→</span>
+<div>Mutter RemoteDesktop<br>绝对指针</div><span>→</span>
+<div>鼠标事件</div>
+</div>
+<ul>
+<li><strong>画面</strong>:PipeWire 拿到虚拟屏幕的画面,GStreamer 压成 JPEG,通过 <code>multipart/x-mixed-replace</code> 推给 Safari 的 <code>&lt;img&gt;</code>。</li>
+<li><strong>分辨率</strong>:虚拟显示器的大小跟随请求的视频尺寸,所以可以直接设成 iPad 的 4:3(如 2048×1536)。</li>
+<li><strong>触控</strong>:网页把手势翻译成 JSON,经 WebSocket 发回,脚本调用 <code>NotifyPointerMotionAbsolute</code> 等接口注入,不需要 uinput 或 root。</li>
+<li><strong>依赖</strong>:仅 Python 标准库 + PyGObject/GStreamer,没有第三方 pip 包。</li>
+</ul>
+
+<h2>2. 安装与使用</h2>
+<pre><code>sudo apt install python3-gi gir1.2-gst-plugins-base-1.0 python3-gst-1.0 \
+  gstreamer1.0-pipewire gstreamer1.0-plugins-good gstreamer1.0-plugins-base
+./ipad-display --size 2048x1536 --scale 2</code></pre>
+<ol>
+<li>终端会打印形如 <code>http://192.168.1.10:8800/?k=令牌</code> 的地址。</li>
+<li>在 iPad 的 Safari 打开;点“分享 → 添加到主屏幕”,之后从图标打开即为全屏。</li>
+<li>把窗口拖到新显示器上。</li>
+<li>Ctrl+C 退出,虚拟显示器会被移除。</li>
+</ol>
+
+<h2>3. 触控手势</h2>
+<table><tr><th>手势</th><th>效果</th></tr>
+<tr><td>单指点按</td><td>鼠标左键点击</td></tr>
+<tr><td>单指拖动</td><td>按住左键拖动(选择文字、移动窗口)</td></tr>
+<tr><td>双指拖动</td><td>滚动</td></tr>
+<tr><td>长按 0.5 秒</td><td>右键</td></tr></table>
+
+<h2>4. 参数</h2>
+<table><tr><th>参数</th><th>默认</th><th>说明</th></tr>
+<tr><td><code>--size</code></td><td>1600x1200</td><td>虚拟显示器像素;iPad 原生为 2048x1536</td></tr>
+<tr><td><code>--scale</code></td><td>1</td><td>GNOME 缩放,2 即 HiDPI(2048x1536 下等效 1024x768)</td></tr>
+<tr><td><code>--fps</code></td><td>30</td><td>最大帧率</td></tr>
+<tr><td><code>--quality</code></td><td>75</td><td>JPEG 质量</td></tr>
+<tr><td><code>--port</code></td><td>8800</td><td>HTTP 端口</td></tr>
+<tr><td><code>--token</code></td><td>随机</td><td>访问令牌</td></tr></table>
+
+<h2>5. USB 有线连接(更低延迟)</h2>
+<p>用数据线连接 iPad,在 iPad 上开启“个人热点”。Ubuntu 会通过 ipheth 出现一个有线网络,使用脚本打印出的对应 IP 地址即可。Wi-Fi 同样可用,只是延迟略高。</p>
+
+<h2>6. 安全与限制</h2>
+<div class="card">
+<ul>
+<li>脚本监听 <code>0.0.0.0</code>,任何拿到令牌的局域网设备都能<strong>控制这台电脑</strong>。请勿泄露地址,令牌每次运行都会重新生成。</li>
+<li>依赖 Mutter 的私有 D-Bus 接口(<code>org.gnome.Mutter.ScreenCast</code> / <code>RemoteDesktop</code>),在 GNOME 42 上验证,其他版本可能失效。</li>
+<li>使用 MJPEG(本机没有 H.264 编码器),带宽比 H.264 高。</li>
+<li>暂不支持键盘透传、音频、Apple Pencil 压感。</li>
+</ul></div>
+
+<h2>7. 常见问题</h2>
+<p><strong>没有出现虚拟显示器?</strong> 确认是 Wayland 会话:<code>echo $XDG_SESSION_TYPE</code> 应输出 <code>wayland</code>。</p>
+<p><strong>画面卡顿?</strong> 降低 <code>--size</code>、<code>--quality</code> 或改用 USB 连接。</p>
+<p><strong>字太小?</strong> 使用 <code>--scale 2</code>。</p>
+</main></body></html>
