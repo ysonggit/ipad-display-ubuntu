@@ -9,9 +9,11 @@ right click).
 
 Stdlib + PyGObject/GStreamer only.  Run:  ./ipad-display --help
 """
-import argparse, base64, hashlib, json, secrets, signal, socket, struct
-import sys, threading, time
+import argparse, base64, hashlib, json, os, secrets, shutil, signal, socket, struct
+import subprocess, sys, threading, time
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
 
 import gi
 gi.require_version("Gst", "1.0")
@@ -155,12 +157,14 @@ PAGE = r"""<!doctype html><html><head><meta charset=utf-8>
 #s{position:fixed;top:6px;left:8px;color:#8a8;font:12px system-ui;pointer-events:none}</style></head>
 <body><img id=v alt=""><div id=s>connecting…</div>
 <script>
-const TOKEN="__TOKEN__", v=document.getElementById('v'), st=document.getElementById('s');
-v.src='/stream?k='+TOKEN;
+const v=document.getElementById('v'), st=document.getElementById('s');
+v.src='/stream';
 let ws;
-function open(){ws=new WebSocket((location.protocol=='https:'?'wss://':'ws://')+location.host+'/ws?k='+TOKEN);
+function open(){ws=new WebSocket((location.protocol=='https:'?'wss://':'ws://')+location.host+'/ws');
  ws.onopen=()=>{st.textContent='connected';setTimeout(()=>st.style.display='none',1500)};
- ws.onclose=()=>{st.style.display='';st.textContent='reconnecting…';setTimeout(open,1000)}}
+ ws.onclose=()=>{st.style.display='';st.textContent='reconnecting…';
+  fetch('/ping',{cache:'no-store'}).then(r=>{if(r.status==401)location.reload()}).catch(()=>{});
+  setTimeout(open,1000)}}
 open();
 const send=o=>ws&&ws.readyState==1&&ws.send(JSON.stringify(o));
 function norm(e){ // map client coords to the letterboxed image rect
@@ -171,7 +175,7 @@ const P=new Map();let mode='idle',down=false,lp=null,origin=null,last2=null;
 const mv=e=>send({t:'m',...norm(e)});
 function cancelLP(){clearTimeout(lp);lp=null}
 function release(){if(down){send({t:'u',b:0});down=false}}
-addEventListener('pointerdown',e=>{e.preventDefault();v.setPointerCapture&&0;P.set(e.pointerId,e);
+addEventListener('pointerdown',e=>{e.preventDefault();P.set(e.pointerId,e);
  if(P.size==1){mode='pending';origin=e;mv(e);
   lp=setTimeout(()=>{if(mode=='pending'){mode='long';send({t:'d',b:2});send({t:'u',b:2});navigator.vibrate&&navigator.vibrate(10)}},500)}
  else if(P.size==2){cancelLP();release();mode='scroll';last2=null}},{passive:false});
@@ -190,37 +194,181 @@ addEventListener('contextmenu',e=>e.preventDefault());
 addEventListener('gesturestart',e=>e.preventDefault());
 </script></body></html>"""
 
+PIN_PAGE = """<!doctype html><html><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=apple-mobile-web-app-capable content=yes>
+<title>iPad Display</title>
+<style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+background:#111;color:#eee;font:17px system-ui,-apple-system,sans-serif}
+form{text-align:center;max-width:320px;padding:24px}
+input{font:600 34px ui-monospace,Menlo,monospace;letter-spacing:.35em;width:7.2ch;text-align:center;
+padding:10px;border-radius:12px;border:1px solid #555;background:#1c1c1e;color:#fff;margin:14px 0}
+button{font:600 18px system-ui;padding:11px 28px;border:0;border-radius:12px;background:#0a6cff;color:#fff}
+p{color:#9a9aa2;margin:6px 0}.e{color:#ff6b6b}</style></head><body>
+<form method=post action=/pin><h2>iPad Display</h2>
+<p>输入电脑终端里显示的 6 位配对码<br>Enter the 6-digit code shown in the terminal</p>__MSG__
+<input name=pin inputmode=numeric pattern="[0-9]*" maxlength=6 autocomplete=off autofocus><br>
+<button>配对 / Pair</button></form></body></html>"""
 
-def make_handler(disp, token):
+COOKIE = "ipd"
+CODE_TTL = 1800          # seconds a pairing token/PIN stays valid
+MAX_FAILS, LOCK_SECS = 5, 300
+
+
+class Pairing:
+    """One-time token + PIN pairing; paired browsers get a long-lived cookie."""
+
+    def __init__(self, days, enabled=True):
+        self.enabled = enabled
+        self.ttl = days * 86400
+        self.path = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")),
+                                 "ipad-display", "devices.json")
+        self.lock = threading.Lock()
+        self.fails = {}
+        self.devices = self._load()
+        self.on_paired = None
+        self.new_codes()
+
+    def _load(self):
+        try:
+            with open(self.path) as f:
+                return json.load(f).get("devices", {})
+        except (OSError, ValueError):
+            return {}
+
+    def _save(self):
+        os.makedirs(os.path.dirname(self.path), mode=0o700, exist_ok=True)
+        tmp = self.path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({"devices": self.devices}, f, indent=1)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, self.path)
+
+    def new_codes(self):
+        self.token = secrets.token_urlsafe(16)
+        self.pin = "%06d" % secrets.randbelow(10 ** 6)
+        self.expires = time.time() + CODE_TTL
+
+    @staticmethod
+    def _h(v):
+        return hashlib.sha256(v.encode()).hexdigest()
+
+    def authed(self, cookie):
+        if not self.enabled:
+            return True
+        if not cookie:
+            return False
+        with self.lock:
+            d = self.devices.get(self._h(cookie))
+            return bool(d) and d["created"] + self.ttl > time.time()
+
+    def _issue(self, ua):
+        cookie = secrets.token_urlsafe(32)
+        name = "iPad" if "iPad" in ua else (ua[:40] or "browser")
+        with self.lock:
+            self.devices[self._h(cookie)] = {"name": name, "created": int(time.time())}
+            self._save()
+            self.new_codes()
+        if self.on_paired:
+            self.on_paired(name)
+        return cookie
+
+    def pair_token(self, token, ua):
+        if time.time() < self.expires and secrets.compare_digest(token, self.token):
+            return self._issue(ua)
+
+    def pair_pin(self, pin, ip, ua):
+        """Returns (cookie|None, error|None)."""
+        with self.lock:
+            n, until = self.fails.get(ip, (0, 0))
+            if until > time.time():
+                return None, "错误次数过多,请稍后再试 / Too many attempts, try later"
+        if time.time() < self.expires and secrets.compare_digest(pin.strip(), self.pin):
+            self.fails.pop(ip, None)
+            return self._issue(ua), None
+        with self.lock:
+            n += 1
+            self.fails[ip] = (0, time.time() + LOCK_SECS) if n >= MAX_FAILS else (n, 0)
+        return None, "配对码错误 / Wrong code"
+
+    def forget(self):
+        with self.lock:
+            self.devices = {}
+            self._save()
+
+
+def make_handler(disp, pairing):
     class H(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
         def log_message(self, *a):
             pass
 
-        def _auth(self):
-            from urllib.parse import urlparse, parse_qs
-            u = urlparse(self.path)
-            return u.path, secrets.compare_digest(parse_qs(u.query).get("k", [""])[0], token)
+        def _cookie(self):
+            c = SimpleCookie(self.headers.get("Cookie", ""))
+            return c[COOKIE].value if COOKIE in c else ""
+
+        def _authed(self):
+            return pairing.authed(self._cookie())
+
+        def _send(self, code, body=b"", ctype="text/html; charset=utf-8", headers=()):
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            for k, v in headers:
+                self.send_header(k, v)
+            self.end_headers()
+            if body:
+                self.wfile.write(body)
+
+        def _set_cookie(self, cookie):
+            return ("Set-Cookie", f"{COOKIE}={cookie}; Path=/; Max-Age={pairing.ttl}; HttpOnly; SameSite=Lax")
+
+        def _pin_page(self, code=200, msg=""):
+            m = f"<p class=e>{msg}</p>" if msg else ""
+            self._send(code, PIN_PAGE.replace("__MSG__", m).encode())
 
         def do_GET(self):
-            path, ok = self._auth()
-            if not ok:
-                self.send_error(403)
+            u = urlparse(self.path)
+            ua = self.headers.get("User-Agent", "")
+            if u.path == "/pair":
+                cookie = pairing.pair_token(parse_qs(u.query).get("t", [""])[0], ua)
+                if cookie:
+                    self._send(302, headers=[("Location", "/"), self._set_cookie(cookie)])
+                else:
+                    self._pin_page(403, "二维码已失效,请输入配对码 / QR expired, enter the code")
                 return
-            if path == "/":
-                body = PAGE.replace("__TOKEN__", token).encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-            elif path == "/stream":
+            if u.path == "/":
+                if self._authed():
+                    self._send(200, PAGE.encode())
+                else:
+                    self._pin_page()
+                return
+            if not self._authed():
+                self._send(401)
+                return
+            if u.path == "/ping":
+                self._send(204)
+            elif u.path == "/stream":
                 self._stream()
-            elif path == "/ws":
+            elif u.path == "/ws":
                 self._ws()
             else:
-                self.send_error(404)
+                self._send(404)
+
+        def do_POST(self):
+            n = min(int(self.headers.get("Content-Length") or 0), 1024)
+            body = self.rfile.read(n).decode("utf-8", "replace")
+            if urlparse(self.path).path != "/pin":
+                self._send(404)
+                return
+            pin = parse_qs(body).get("pin", [""])[0]
+            cookie, err = pairing.pair_pin(pin, self.client_address[0], self.headers.get("User-Agent", ""))
+            if cookie:
+                self._send(303, headers=[("Location", "/"), self._set_cookie(cookie)])
+            else:
+                self._pin_page(429 if "多" in err else 403, err)
 
         def _stream(self):
             self.send_response(200)
@@ -243,8 +391,9 @@ def make_handler(disp, token):
 
         def _ws(self):
             key = self.headers.get("Sec-WebSocket-Key")
-            if not key:
-                self.send_error(400)
+            origin = self.headers.get("Origin")
+            if not key or (origin and urlparse(origin).netloc != self.headers.get("Host")):
+                self._send(400)
                 return
             acc = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
             self.send_response(101)
@@ -281,22 +430,39 @@ def make_handler(disp, token):
     return H
 
 
-def lan_ips():
-    ips = set()
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("10.255.255.255", 1))
-        ips.add(s.getsockname()[0])
-        s.close()
-    except OSError:
-        pass
-    try:
-        import subprocess
-        out = subprocess.run(["hostname", "-I"], capture_output=True, text=True).stdout.split()
-        ips.update(i for i in out if "." in i)
-    except OSError:
-        pass
-    return sorted(ips) or ["<this-machine-ip>"]
+def hosts():
+    """Addresses to reach this machine, best first: USB-tether IP, <host>.local, LAN IPs."""
+    usb, lan = [], []
+    out = subprocess.run(["ip", "-4", "-o", "addr", "show"], capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        f = line.split()
+        dev, ip = f[1], f[3].split("/")[0]
+        if ip.startswith("127."):
+            continue
+        drv = os.path.realpath(f"/sys/class/net/{dev}/device/driver")
+        (usb if os.path.basename(drv) == "ipheth" else lan).append(ip)
+    local = socket.gethostname().split(".")[0] + ".local"
+    return usb + [local] + lan, bool(usb)
+
+
+def avahi_ok():
+    return subprocess.run(["systemctl", "is-active", "--quiet", "avahi-daemon"]).returncode == 0
+
+
+def show_pairing(pairing, port):
+    hs, _ = hosts()
+    base = lambda h: f"http://{h}" + ("" if port == 80 else f":{port}")
+    print(flush=True)
+    log("在 iPad 上用相机扫描二维码 / scan with the iPad camera:")
+    if shutil.which("qrencode"):
+        subprocess.run(["qrencode", "-t", "UTF8", "-m", "1", f"{base(hs[0])}/pair?t={pairing.token}"])
+    else:
+        log("(安装 qrencode 可显示二维码 / install qrencode for a QR code: sudo apt install qrencode)")
+        print(f"    {base(hs[0])}/pair?t={pairing.token}", flush=True)
+    log(f"或在 iPad Safari 打开 / or open in Safari: {base(hs[0])}   配对码 / PIN: {pairing.pin}")
+    if len(hs) > 1:
+        log("备用地址 / other addresses: " + "  ".join(base(h) for h in hs[1:]))
+    log(f"已配对设备 / paired devices: {len(pairing.devices)}   (码 30 分钟内有效 / code valid 30 min)")
 
 
 def main():
@@ -306,23 +472,55 @@ def main():
     ap.add_argument("--scale", type=int, default=1, choices=(1, 2), help="GNOME UI scale for the iPad monitor (2 = HiDPI)")
     ap.add_argument("--fps", type=int, default=30)
     ap.add_argument("--quality", type=int, default=75, help="JPEG quality 1-100 (default %(default)s)")
-    ap.add_argument("--port", type=int, default=8800)
-    ap.add_argument("--token", default=None, help="access token (default: random per run)")
+    ap.add_argument("--port", type=int, default=8800, help="HTTP port; 80 gives a bare http://host.local URL "
+                    "(needs: sudo sysctl net.ipv4.ip_unprivileged_port_start=80)")
+    ap.add_argument("--cookie-days", type=int, default=90, help="how long a paired iPad stays paired (default %(default)s)")
+    ap.add_argument("--no-pairing", action="store_true", help="disable authentication (trusted networks only!)")
+    ap.add_argument("--list-devices", action="store_true", help="list paired devices and exit")
+    ap.add_argument("--forget", action="store_true", help="unpair all devices and exit")
     a = ap.parse_args()
-    w, h = (int(x) for x in a.size.lower().split("x"))
-    token = a.token or secrets.token_urlsafe(9)
 
+    pairing = Pairing(a.cookie_days, enabled=not a.no_pairing)
+    if a.list_devices:
+        for d in pairing.devices.values():
+            print(time.strftime("%Y-%m-%d %H:%M", time.localtime(d["created"])), d["name"])
+        print(f"{len(pairing.devices)} device(s)")
+        return
+    if a.forget:
+        n = len(pairing.devices)
+        pairing.forget()
+        print(f"forgot {n} device(s)")
+        return
+
+    w, h = (int(x) for x in a.size.lower().split("x"))
+    try:
+        srv = ThreadingHTTPServer(("0.0.0.0", a.port), make_handler(None, pairing))
+    except PermissionError:
+        sys.exit(f"cannot bind port {a.port}; run: sudo sysctl net.ipv4.ip_unprivileged_port_start={a.port}")
     Gst.init(None)
     disp = Display(w, h, a.fps, a.quality, a.scale)
+    srv.RequestHandlerClass = make_handler(disp, pairing)
     disp.start()
-    srv = ThreadingHTTPServer(("0.0.0.0", a.port), make_handler(disp, token))
     srv.daemon_threads = True
     threading.Thread(target=srv.serve_forever, daemon=True).start()
 
     log(f"virtual monitor {w}x{h} created - arrange it in Settings > Displays")
-    log("open on the iPad (Safari), then Share > Add to Home Screen for fullscreen:")
-    for ip in lan_ips():
-        print(f"    http://{ip}:{a.port}/?k={token}", flush=True)
+    if a.no_pairing:
+        log("WARNING: --no-pairing, anyone on the network can control this machine")
+        log("open on the iPad: " + "  ".join(f"http://{x}:{a.port}" for x in hosts()[0]))
+    else:
+        if not avahi_ok():
+            log("avahi-daemon 未运行,.local 地址可能无法使用 / avahi-daemon is not running, .local names may fail")
+        show_pairing(pairing, a.port)
+        pairing.on_paired = lambda name: GLib.idle_add(lambda: (log(f"已配对 / paired: {name}"),
+                                                                  show_pairing(pairing, a.port), False)[-1])
+
+        def refresh():
+            if time.time() >= pairing.expires:
+                pairing.new_codes()
+                show_pairing(pairing, a.port)
+            return True
+        GLib.timeout_add_seconds(30, refresh)
 
     def quit_(*_):
         disp.loop.quit()

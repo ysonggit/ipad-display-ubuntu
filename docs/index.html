@@ -45,14 +45,18 @@ a{color:var(--acc)}
 
 <h2>2. 安装与使用</h2>
 <pre><code>sudo apt install python3-gi gir1.2-gst-plugins-base-1.0 python3-gst-1.0 \
-  gstreamer1.0-pipewire gstreamer1.0-plugins-good gstreamer1.0-plugins-base
+  gstreamer1.0-pipewire gstreamer1.0-plugins-good gstreamer1.0-plugins-base qrencode
 ./ipad-display --size 2048x1536 --scale 2</code></pre>
-<ol>
-<li>终端会打印形如 <code>http://192.168.1.10:8800/?k=令牌</code> 的地址。</li>
-<li>在 iPad 的 Safari 打开;点“分享 → 添加到主屏幕”,之后从图标打开即为全屏。</li>
-<li>把窗口拖到新显示器上。</li>
-<li>Ctrl+C 退出,虚拟显示器会被移除。</li>
-</ol>
+<div class="card"><strong>第一次(配对):</strong>用 iPad 相机扫终端里的二维码 → Safari 自动打开并配对 → 分享 → 添加到主屏幕。<br>
+<strong>以后:</strong>运行脚本,点主屏幕图标即可,不用输入任何东西。</div>
+<ul>
+<li>地址是固定的 <code>http://主机名.local:8800</code>(Ubuntu 自带 Avahi),不受 DHCP 变化影响。</li>
+<li>不方便扫码时,打开该地址并输入终端里的 <strong>6 位配对码</strong>。</li>
+<li>二维码和配对码一次性使用,用后自动更换;30 分钟没用也会更换。配对后的 iPad 记住 90 天。</li>
+<li>如果主屏幕图标要求输入配对码(iOS 主屏幕 App 的 Cookie 独立),按终端里的新码输入一次即可。</li>
+<li>想要不带端口的地址:<code>sudo sysctl net.ipv4.ip_unprivileged_port_start=80</code>,然后加 <code>--port 80</code>。</li>
+<li>管理设备:<code>--list-devices</code> 查看,<code>--forget</code> 全部取消配对。</li>
+</ul>
 
 <h2>3. 触控手势</h2>
 <table><tr><th>手势</th><th>效果</th></tr>
@@ -67,16 +71,19 @@ a{color:var(--acc)}
 <tr><td><code>--scale</code></td><td>1</td><td>GNOME 缩放,2 即 HiDPI(2048x1536 下等效 1024x768)</td></tr>
 <tr><td><code>--fps</code></td><td>30</td><td>最大帧率</td></tr>
 <tr><td><code>--quality</code></td><td>75</td><td>JPEG 质量</td></tr>
-<tr><td><code>--port</code></td><td>8800</td><td>HTTP 端口</td></tr>
-<tr><td><code>--token</code></td><td>随机</td><td>访问令牌</td></tr></table>
+<tr><td><code>--port</code></td><td>8800</td><td>HTTP 端口,80 可省略端口号</td></tr>
+<tr><td><code>--cookie-days</code></td><td>90</td><td>配对有效天数</td></tr>
+<tr><td><code>--list-devices</code> / <code>--forget</code></td><td></td><td>列出 / 取消所有已配对设备</td></tr>
+<tr><td><code>--no-pairing</code></td><td></td><td>关闭认证(仅限可信网络)</td></tr></table>
 
 <h2>5. USB 有线连接(更低延迟)</h2>
-<p>用数据线连接 iPad,在 iPad 上开启“个人热点”。Ubuntu 会通过 ipheth 出现一个有线网络,使用脚本打印出的对应 IP 地址即可。Wi-Fi 同样可用,只是延迟略高。</p>
+<p>用数据线连接 iPad,在 iPad 上开启“个人热点”。Ubuntu 会通过 ipheth 出现一个有线网络,脚本会自动识别 ipheth 网卡,优先打印并在二维码中使用该地址(通常是 172.20.10.x)。Wi-Fi 同样可用,只是延迟略高。</p>
 
 <h2>6. 安全与限制</h2>
 <div class="card">
 <ul>
-<li>脚本监听 <code>0.0.0.0</code>,任何拿到令牌的局域网设备都能<strong>控制这台电脑</strong>。请勿泄露地址,令牌每次运行都会重新生成。</li>
+<li>未配对的设备无法看到画面或控制电脑;配对需要一次性二维码或 6 位码,错 5 次锁定 5 分钟,每台设备独立 Cookie,记录在 <code>~/.config/ipad-display/devices.json</code>(仅存哈希)。</li>
+<li>使用明文 HTTP,Cookie 在不可信 Wi-Fi 上可能被嗅探,请只在家庭网络或 USB 热点使用。</li>
 <li>依赖 Mutter 的私有 D-Bus 接口(<code>org.gnome.Mutter.ScreenCast</code> / <code>RemoteDesktop</code>),在 GNOME 42 上验证,其他版本可能失效。</li>
 <li>使用 MJPEG(本机没有 H.264 编码器),带宽比 H.264 高。</li>
 <li>暂不支持键盘透传、音频、Apple Pencil 压感。</li>

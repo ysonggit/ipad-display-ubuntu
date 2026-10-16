@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>设计提案:免输入长网址连接</title>
+<style>
+:root{--bg:#fff;--fg:#1d1d1f;--mute:#6e6e73;--card:#f5f5f7;--acc:#0a6cff;--code:#eef0f4;--ok:#1a7f37;--warn:#b35900}
+@media(prefers-color-scheme:dark){:root{--bg:#111;--fg:#f2f2f2;--mute:#a0a0a8;--card:#1c1c1e;--acc:#5aa2ff;--code:#26262a;--ok:#4ac26b;--warn:#e8a04a}}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.7 -apple-system,"PingFang SC","Noto Sans CJK SC",sans-serif}
+main{max-width:880px;margin:0 auto;padding:32px 16px 64px}
+h1{font-size:2rem;margin:.2em 0}h2{margin-top:2em;border-bottom:1px solid var(--code);padding-bottom:.3em}
+p.sub{color:var(--mute)}
+pre,code{background:var(--code);border-radius:6px;font-family:ui-monospace,Menlo,monospace;font-size:.9em}
+code{padding:.1em .35em}pre{padding:12px 14px;overflow-x:auto}pre code{padding:0;background:none}
+table{border-collapse:collapse;width:100%}th,td{border:1px solid var(--code);padding:6px 10px;text-align:left;vertical-align:top}
+.card{background:var(--card);border-radius:12px;padding:14px 18px;margin:12px 0}
+.rec{border-left:4px solid var(--ok)}
+.flow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:16px 0}
+.flow div{background:var(--card);border:1px solid var(--code);border-radius:10px;padding:8px 12px;font-size:.9em;text-align:center}
+.flow span{color:var(--mute)}
+.ok{color:var(--ok)}.warn{color:var(--warn)}
+</style></head><body><main>
+<h1>设计提案:免输入长网址连接</h1>
+<p class="sub">问题:现在要在 iPad 的 Safari 里手打 <code>http://192.168.178.49:8800/?k=A9xQ2…</code>,既长又容易输错,而且每次运行令牌都会变。</p>
+
+<h2>1. 问题根源</h2>
+<table>
+<tr><th>难点</th><th>原因</th></tr>
+<tr><td>IP 地址难记</td><td>局域网 IP 由 DHCP 分配,会变</td></tr>
+<tr><td>令牌很长</td><td>令牌放在 URL 里,每次随机生成</td></tr>
+<tr><td>每次都要重新输入</td><td>没有“记住这台 iPad”的机制</td></tr>
+</table>
+
+<h2>2. 目标体验</h2>
+<div class="card rec">
+<strong>第一次:</strong>iPad 相机扫一下终端里的二维码 → Safari 自动打开并配对 → 添加到主屏幕。<br>
+<strong>以后:</strong>在电脑上运行脚本,点主屏幕图标即可连接,<strong>一个字都不用输入</strong>。
+</div>
+
+<h2>3. 方案(组合使用)</h2>
+<div class="flow">
+<div>终端打印<br>二维码</div><span>→</span>
+<div>iPad 相机扫码<br>打开配对链接</div><span>→</span>
+<div>服务器核对一次性令牌<br>下发 Cookie</div><span>→</span>
+<div>跳转到干净的<br>固定地址</div><span>→</span>
+<div>主屏幕图标<br>下次免配对</div>
+</div>
+
+<h3>A. 二维码(解决“输入长网址”)</h3>
+<ul>
+<li>启动时在终端用 Unicode 方块字符画出二维码,内容是完整配对链接。</li>
+<li>iPad 相机原生支持扫码,点一下就在 Safari 打开。</li>
+<li>实现:调用 <code>qrencode -t UTF8</code>(<code>sudo apt install qrencode</code>);没装时回退为只打印文字链接,并给出提示。</li>
+</ul>
+
+<h3>B. 固定且好记的地址:mDNS 主机名</h3>
+<ul>
+<li>Ubuntu 自带 Avahi,同一网络内 <code>主机名.local</code> 可直接解析,iPad 的 Safari 支持。</li>
+<li>地址变成 <code>http://yang-macbookpro.local:8800</code>,不再受 DHCP 影响。</li>
+<li>端口固定为 8800;如果想连端口都省掉,可选用 80 端口(需要 <code>setcap</code> 或端口转发,作为可选项,默认不开)。</li>
+<li>启动时自动读取 <code>hostname</code>,把 <code>.local</code> 地址和 IP 地址都打印出来(IP 作为备用)。</li>
+</ul>
+
+<h3>C. 配对 + Cookie(解决“令牌每次变化、每次要输”)</h3>
+<ul>
+<li>二维码里的链接携带<strong>一次性配对令牌</strong>。服务器核对通过后,给这台 iPad 下发<strong>长期 Cookie</strong>(默认 90 天),并 302 跳转到不带令牌的干净地址。</li>
+<li>之后视频流、WebSocket 都用 Cookie 认证,URL 里不再出现令牌,主屏幕图标也不会失效。</li>
+<li>已配对设备保存在 <code>~/.config/ipad-display/devices.json</code>(只存令牌哈希),重启脚本后无需重新配对。</li>
+<li>未配对的浏览器打开 <code>.local</code> 地址时,显示一个简洁的页面:<strong>输入终端上显示的 6 位数字 PIN</strong>(备用,不方便扫码时用)。PIN 比长令牌好输得多。</li>
+<li>新增 <code>--forget</code> 清除所有已配对设备,<code>--no-pairing</code> 仅限可信网络使用(跳过认证)。</li>
+</ul>
+
+<h3>D. USB 有线连接(可选的便利)</h3>
+<ul>
+<li>iPad 个人热点通过 USB 连接时,Ubuntu 一般拿到 <code>172.20.10.x</code>,iPad 在 <code>172.20.10.1</code>。脚本自动识别 <code>ipheth</code> 网卡并优先打印该网段的地址和二维码。</li>
+</ul>
+
+<h2>4. 不采用的方案</h2>
+<table>
+<tr><th>方案</th><th>原因</th></tr>
+<tr><td>短链接服务 / 云中转</td><td>画面和控制权要经过第三方,违背局域网本地运行的初衷</td></tr>
+<tr><td>原生 iPad App</td><td>需要开发者账号和侧载,失去“无需安装”的优点</td></tr>
+<tr><td>Bonjour 自动发现</td><td>iOS Safari 不能浏览 Bonjour 服务,只能解析已知的 <code>.local</code> 名</td></tr>
+<tr><td>关闭认证</td><td>同一局域网任何人都能控制电脑,风险太高</td></tr>
+</table>
+
+<h2>5. 安全评估</h2>
+<div class="card">
+<ul>
+<li><span class="ok">更好:</span>令牌不再出现在会被历史记录、截图、分享的 URL 里;每台设备独立 Cookie,可单独撤销。</li>
+<li><span class="ok">一次性配对令牌:</span>用过即失效,有效期 5 分钟;PIN 连续错误 5 次后锁定该来源。</li>
+<li><span class="warn">仍需注意:</span>仍然是明文 HTTP,在不可信的 Wi-Fi 上请勿使用(Cookie 可被同网段嗅探)。建议在家庭网络或 USB 热点下使用,README 中明确说明。</li>
+</ul></div>
+
+<h2>6. 代码改动范围</h2>
+<table>
+<tr><th>位置</th><th>改动</th></tr>
+<tr><td><code>make_handler</code></td><td>认证由 <code>?k=</code> 改为 Cookie;新增 <code>/pair</code>(一次性令牌换 Cookie)和 <code>/pin</code>(PIN 页)</td></tr>
+<tr><td>新增 <code>Pairing</code> 类</td><td>管理一次性令牌、PIN、设备哈希、过期与限速,读写 <code>devices.json</code></td></tr>
+<tr><td><code>main</code></td><td>打印 <code>.local</code> / IP 地址、PIN、二维码;新增 <code>--forget</code>、<code>--no-pairing</code>、<code>--cookie-days</code></td></tr>
+<tr><td>页面 JS</td><td>去掉 URL 中的令牌,<code>/stream</code> 和 <code>/ws</code> 靠 Cookie</td></tr>
+<tr><td>README / docs</td><td>更新使用步骤,加入二维码配对说明</td></tr>
+</table>
+<p>预计约 120 行 Python,依然只依赖标准库,<code>qrencode</code> 为可选依赖。</p>
+
+<h2>7. 需要你确认的点</h2>
+<ol>
+<li>是否接受 <strong>二维码 + Cookie 配对</strong> 为默认方式(PIN 作为备用)?</li>
+<li>Cookie 有效期 90 天是否合适?</li>
+<li>是否需要可选的 80 端口,让地址变成 <code>http://主机名.local</code>?</li>
+<li>是否要同时支持一键的 <code>--forget</code> 与已配对设备列表(<code>--list-devices</code>)?</li>
+</ol>
+<p class="sub">你确认后我再实现,并在本机用模拟浏览器(带/不带 Cookie)测试配对流程。</p>
+</main></body></html>
