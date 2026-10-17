@@ -66,6 +66,20 @@ sudo apt install python3-gi gir1.2-gst-plugins-base-1.0 python3-gst-1.0 \
 - 为了没有黑边,请用「添加到主屏幕」的图标打开(全屏),不要在带地址栏的 Safari 标签里用。
 - 想要更清晰:`./ipad-display --max-edge 2048 --scale 2`(GNOME 界面 2 倍缩放,等效 1024 宽)。
 
+## 窗口自动铺满 iPad(GNOME 扩展)
+
+GNOME 不会在窗口移到另一块显示器时调整大小,窗口拖到较小的 iPad 上会超出屏幕。
+附带的扩展让落到 iPad 显示器上的窗口**自动最大化、铺满 iPad**;不能最大化的窗口和对话框会缩小并移到屏幕内。
+拖回笔记本屏幕时,GNOME 会自动恢复原来的大小。
+
+```bash
+./extension/install.sh      # 然后注销并重新登录一次(Wayland 下扩展只在登录时加载)
+```
+
+- 适用于:鼠标拖过去松手、`Super+Shift+→/←` 移过去、直接在 iPad 上打开的新窗口。
+- 不影响桌面图标(DING)等辅助窗口和全屏窗口。
+- 关闭:`gnome-extensions disable ipad-display-helper@ysonggit.github.io`
+
 ## 性能与稳定
 
 - 帧率在 Mutter 一侧限制(`max-framerate`),并在颜色转换之前丢帧;触摸移动事件按显示帧合并,避免淹没合成器。
