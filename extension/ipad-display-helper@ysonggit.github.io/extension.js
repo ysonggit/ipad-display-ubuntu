@@ -122,24 +122,28 @@ function readText(path) {
 }
 
 function readOptions() {
-    const opts = { orientation: 'landscape', position: 'left', usb: false };
+    // options the menu manages; anything else (e.g. --max-edge 2048 --scale 2) is kept as-is
+    const opts = { orientation: 'landscape', position: 'left', usb: false, extra: [] };
     const text = readText(ENV_FILE) || '';
     const args = (text.match(/IPAD_DISPLAY_ARGS=(.*)/) || [])[1] || '';
-    const words = args.trim().split(/\s+/);
-    words.forEach((w, i) => {
-        if (w === '--orientation')
-            opts.orientation = words[i + 1];
-        else if (w === '--position')
-            opts.position = words[i + 1];
-        else if (w === '--usb')
+    const words = args.trim().split(/\s+/).filter(w => w);
+    for (let i = 0; i < words.length; i++) {
+        if (words[i] === '--orientation')
+            opts.orientation = words[++i];
+        else if (words[i] === '--position')
+            opts.position = words[++i];
+        else if (words[i] === '--usb')
             opts.usb = true;
-    });
+        else
+            opts.extra.push(words[i]);
+    }
     return opts;
 }
 
 function writeOptions(opts) {
     GLib.mkdir_with_parents(CONF_DIR, 0o700);
-    const args = `--orientation ${opts.orientation} --position ${opts.position}${opts.usb ? ' --usb' : ''}`;
+    const args = [`--orientation ${opts.orientation} --position ${opts.position}`,
+        opts.usb ? '--usb' : '', ...opts.extra].filter(a => a).join(' ');
     GLib.file_set_contents(ENV_FILE, `# written by the iPad Display top-bar menu\nIPAD_DISPLAY_ARGS=${args}\n`);
 }
 
