@@ -1,0 +1,20 @@
+# Start ipad-display in USB mode with the desktop session.
+# The virtual monitor only appears while the iPad is plugged in.
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp contrib/ipad-display-usb.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now ipad-display-usb
+#   journalctl --user -u ipad-display-usb -f      # pairing PIN / status
+[Unit]
+Description=iPad as a second display over USB
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=%h/ipad-display-ubuntu/ipad-display --usb --position left
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

@@ -50,6 +50,9 @@ sudo apt install python3-gi gir1.2-gst-plugins-base-1.0 python3-gst-1.0 \
 | `--list-devices` | | 列出已配对设备并退出 |
 | `--forget` | | 取消所有设备配对并退出 |
 | `--no-pairing` | | 关闭认证(仅限可信网络) |
+| `--usb` | | 只走 USB 数据线;插线出现显示器,拔线移除 |
+| `--usb-doctor` | | 诊断 USB 连接并退出 |
+| `--usb-iface` | | 手动指定 USB 网卡名(自动识别失败时) |
 
 ## 屏幕位置与黑边
 
@@ -63,10 +66,39 @@ sudo apt install python3-gi gir1.2-gst-plugins-base-1.0 python3-gst-1.0 \
 - 帧率在 Mutter 一侧限制(`max-framerate`),并在颜色转换之前丢帧;触摸移动事件按显示帧合并,避免淹没合成器。
 - 如果仍然卡顿:降低 `--max-edge` / `--fps` / `--quality`,或改用 USB 连接。
 
-## USB 有线连接
+## USB 数据线连接(推荐)
 
-插上 iPad,开启「个人热点」并允许 USB,Ubuntu 会出现一个有线网络(ipheth),
-脚本会自动识别并优先使用该网络的地址(通常是 `172.20.10.x`),二维码也指向它,延迟比 Wi-Fi 低。
+iOS 只允许电脑**主动连到** iPad(usbmuxd),不允许 iPad 上的 Safari 通过数据线连回电脑。
+唯一能让 Safari 经数据线访问电脑的通道,是 iPad 的 **USB 网络**(个人热点,Linux 驱动 `ipheth`):
+iPad 自己是 `172.20.10.1`,Ubuntu 拿到 `172.20.10.x`,画面和触控都走这根线,不经过 Wi-Fi。
+
+```bash
+./ipad-display --usb-doctor          # 逐项检查:设备、信任、驱动、网卡、IP、连通性
+./ipad-display --usb --position left
+```
+
+1. 用数据线连接 iPad,解锁,弹出“信任此电脑”时点**信任**;
+2. iPad:设置 → 个人热点 → 打开“允许其他人加入”(不需要 Wi-Fi 密码,也不会用蜂窝流量给电脑上网以外的用途);
+3. 终端出现二维码,扫码配对、添加到主屏幕;以后插线 + 点图标即可。
+
+`--usb` 模式下:
+- **只**在 USB 网卡上提供服务,来自 Wi-Fi / 其他网卡的请求一律拒绝;
+- 插上线才创建虚拟显示器,拔掉 5 秒后自动移除(5 秒内重新插上不受影响);
+- JPEG 质量默认提高到 85(线缆带宽充足)。
+
+开机自动运行(插线即用):
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp contrib/ipad-display-usb.service ~/.config/systemd/user/
+systemctl --user daemon-reload && systemctl --user enable --now ipad-display-usb
+journalctl --user -u ipad-display-usb -f    # 查看配对码
+```
+
+> 关于雷雳 / USB 3 线:iPad 的 USB 网络是 USB 2 级别(约几百 Mbit/s),线缆规格不影响速度;
+> 但这已远超画面所需(约 3–8 MB/s),优势在于延迟稳定、不受 Wi-Fi 干扰,同时还能给 iPad 充电。
+>
+> **仅 Wi-Fi 版 iPad 没有“个人热点”**,无法建立 USB 网络,只能用 Wi-Fi 模式。
 
 ## 已知限制
 

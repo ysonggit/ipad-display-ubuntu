@@ -85,10 +85,29 @@ a{color:var(--acc)}
 <li><strong>性能:</strong>帧率在 Mutter 一侧限流并在颜色转换前丢帧,触摸移动事件按帧合并,以免拖慢 gnome-shell。仍卡顿时降低 <code>--max-edge</code> / <code>--fps</code>。</li>
 </ul>
 
-<h2>5b. USB 有线连接(更低延迟)</h2>
-<p>用数据线连接 iPad,在 iPad 上开启“个人热点”。Ubuntu 会通过 ipheth 出现一个有线网络,脚本会自动识别 ipheth 网卡,优先打印并在二维码中使用该地址(通常是 172.20.10.x)。Wi-Fi 同样可用,只是延迟略高。</p>
+<h2>6. USB 数据线连接(推荐)</h2>
+<p>iOS 只允许电脑主动连到 iPad,不允许 iPad 的 Safari 通过数据线连回电脑。唯一的通道是 iPad 的 <strong>USB 网络</strong>(个人热点,Linux 驱动 <code>ipheth</code>):</p>
+<div class="flow">
+<div>iPad Safari<br>172.20.10.1</div><span>⇄ 数据线 ⇄</span>
+<div>ipheth 网卡<br>172.20.10.x</div><span>→</span>
+<div>ipadisplay --usb<br>只监听这块网卡</div>
+</div>
+<pre><code>./ipad-display --usb-doctor          # 逐项诊断
+./ipad-display --usb --position left</code></pre>
+<ol>
+<li>插线、解锁 iPad,点“信任此电脑”。</li>
+<li>iPad:设置 → 个人热点 → 打开“允许其他人加入”。</li>
+<li>扫终端里的二维码配对,添加到主屏幕。以后插线 + 点图标即可。</li>
+</ol>
+<ul>
+<li><strong>只走 USB:</strong>来自 Wi-Fi 等其他网卡的请求一律拒绝。</li>
+<li><strong>即插即用:</strong>插线才出现虚拟显示器,拔线 5 秒后移除;5 秒内重插不受影响。</li>
+<li><strong>开机自启:</strong>见 <code>contrib/ipad-display-usb.service</code>(systemd 用户服务),<code>journalctl --user -u ipad-display-usb -f</code> 查看配对码。</li>
+<li><strong>关于雷雳 / USB 3 线:</strong>iPad 的 USB 网络是 USB 2 级别,线缆规格不影响速度,但带宽仍远超画面所需;优势是延迟稳定、不受 Wi-Fi 干扰,还能充电。</li>
+<li><strong>限制:</strong>仅 Wi-Fi 版 iPad 没有个人热点,只能用 Wi-Fi 模式。</li>
+</ul>
 
-<h2>6. 安全与限制</h2>
+<h2>7. 安全与限制</h2>
 <div class="card">
 <ul>
 <li>未配对的设备无法看到画面或控制电脑;配对需要一次性二维码或 6 位码,错 5 次锁定 5 分钟,每台设备独立 Cookie,记录在 <code>~/.config/ipad-display/devices.json</code>(仅存哈希)。</li>
@@ -98,7 +117,7 @@ a{color:var(--acc)}
 <li>暂不支持键盘透传、音频、Apple Pencil 压感。</li>
 </ul></div>
 
-<h2>7. 常见问题</h2>
+<h2>8. 常见问题</h2>
 <p><strong>没有出现虚拟显示器?</strong> 确认是 Wayland 会话:<code>echo $XDG_SESSION_TYPE</code> 应输出 <code>wayland</code>。</p>
 <p><strong>画面卡顿?</strong> 降低 <code>--size</code>、<code>--quality</code> 或改用 USB 连接。</p>
 <p><strong>字太小?</strong> 使用 <code>--scale 2</code>。</p>

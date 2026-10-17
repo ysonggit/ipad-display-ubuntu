@@ -428,7 +428,17 @@ def make_handler(disp, pairing):
             m = f"<p class=e>{msg}</p>" if msg else ""
             self._send(code, PIN_PAGE.replace("__MSG__", m).encode())
 
+        def _usb_ok(self):
+            """In --usb mode only answer connections that arrived over the USB link."""
+            if not USB["only"] or self.connection.getsockname()[0] in usb_ips():
+                return True
+            self.close_connection = True
+            self._send(403, b"USB only")
+            return False
+
         def do_GET(self):
+            if not self._usb_ok():
+                return
             u = urlparse(self.path)
             ua = self.headers.get("User-Agent", "")
             if u.path == "/pair":
@@ -457,6 +467,8 @@ def make_handler(disp, pairing):
                 self._send(404)
 
         def do_POST(self):
+            if not self._usb_ok():
+                return
             n = min(int(self.headers.get("Content-Length") or 0), 1024)
             body = self.rfile.read(n).decode("utf-8", "replace")
             if urlparse(self.path).path != "/pin":
@@ -529,19 +541,88 @@ def make_handler(disp, pairing):
     return H
 
 
-def hosts():
-    """Addresses to reach this machine, best first: USB-tether IP, <host>.local, LAN IPs."""
-    usb, lan = [], []
+USB = {"only": False, "iface": None}   # set by --usb / --usb-iface
+USB_GW = "172.20.10.1"                  # the iPad's own address on its Personal Hotspot link
+
+
+def usb_links():
+    """{iface: [ipv4,...]} for iPad/iPhone USB network links (ipheth driver, or --usb-iface)."""
+    links = {}
+    for dev in sorted(os.listdir("/sys/class/net")):
+        drv = os.path.basename(os.path.realpath(f"/sys/class/net/{dev}/device/driver"))
+        if drv == "ipheth" or dev == USB["iface"]:
+            links[dev] = []
     out = subprocess.run(["ip", "-4", "-o", "addr", "show"], capture_output=True, text=True).stdout
     for line in out.splitlines():
         f = line.split()
-        dev, ip = f[1], f[3].split("/")[0]
-        if ip.startswith("127."):
-            continue
-        drv = os.path.realpath(f"/sys/class/net/{dev}/device/driver")
-        (usb if os.path.basename(drv) == "ipheth" else lan).append(ip)
+        if f[1] in links:
+            links[f[1]].append(f[3].split("/")[0])
+    return links
+
+
+_usb_cache = [0.0, set()]
+
+
+def usb_ips():
+    if time.monotonic() - _usb_cache[0] > 1.5:
+        _usb_cache[:] = [time.monotonic(), {ip for ips in usb_links().values() for ip in ips}]
+    return _usb_cache[1]
+
+
+def hosts():
+    """Addresses to reach this machine, best first: USB-link IP, <host>.local, LAN IPs."""
+    usb = sorted({ip for ips in usb_links().values() for ip in ips})
+    if USB["only"]:
+        return usb, bool(usb)
+    lan = []
+    out = subprocess.run(["ip", "-4", "-o", "addr", "show"], capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        ip = line.split()[3].split("/")[0]
+        if not ip.startswith("127.") and ip not in usb:
+            lan.append(ip)
     local = socket.gethostname().split(".")[0] + ".local"
     return usb + [local] + lan, bool(usb)
+
+
+def usb_doctor():
+    """Explain, step by step, what is missing for a USB-cable connection."""
+    ok = lambda b: "\u2713" if b else "\u2717"
+    print("iPad USB 连接诊断 / USB link diagnosis\n")
+    lsusb = subprocess.run(["lsusb"], capture_output=True, text=True).stdout
+    apple = [l for l in lsusb.splitlines() if "05ac:" in l and "iBridge" not in l]
+    print(f" {ok(apple)} 1. USB 上检测到 iPad / iPad seen on USB")
+    for l in apple:
+        print("      " + l)
+    if not apple:
+        print("      插上数据线,iPad 解锁,弹出“信任此电脑”时点信任 / plug in, unlock, tap Trust")
+    mod = subprocess.run(["modinfo", "ipheth"], capture_output=True).returncode == 0
+    print(f" {ok(mod)} 2. 内核驱动 ipheth / kernel driver ipheth")
+    mux = shutil.which("usbmuxd") is not None
+    print(f" {ok(mux)} 3. usbmuxd 已安装 / usbmuxd installed (handles the Trust pairing)")
+    if not mux:
+        print("      sudo apt install usbmuxd libimobiledevice-utils")
+    if shutil.which("idevicepair") and apple:
+        r = subprocess.run(["idevicepair", "validate"], capture_output=True, text=True)
+        print(f" {ok(r.returncode == 0)} 4. 已信任此电脑 / trusted: {(r.stdout or r.stderr).strip()}")
+        if r.returncode:
+            print("      idevicepair pair   (然后在 iPad 上点“信任” / then tap Trust on the iPad)")
+    links = usb_links()
+    print(f" {ok(links)} 5. USB 网络接口 / USB network interface: {', '.join(links) or 'none'}")
+    if apple and not links:
+        print("      iPad: 设置 → 个人热点 → 打开“允许其他人加入”(连着线即可,不用 Wi-Fi 密码)")
+        print("      Settings > Personal Hotspot > Allow Others to Join")
+        print("      注意:仅 Wi-Fi 版 iPad 没有个人热点,无法用 USB 网络,请改用 Wi-Fi")
+        print("      Note: Wi-Fi-only iPads have no Personal Hotspot - use Wi-Fi instead")
+    have_ip = any(links.values())
+    print(f" {ok(have_ip)} 6. 已获得 IP / got an IP: " +
+          ", ".join(f"{d}={'/'.join(v) or '-'}" for d, v in links.items()))
+    if links and not have_ip:
+        print(f"      nmcli device connect {next(iter(links))}")
+    if have_ip:
+        dev = next(d for d, v in links.items() if v)
+        r = subprocess.run(["ping", "-c", "1", "-W", "1", "-I", dev, USB_GW], capture_output=True)
+        print(f" {ok(r.returncode == 0)} 7. 能连通 iPad / iPad reachable at {USB_GW}")
+        print(f"\n  一切正常时运行 / when all good run:  ./ipad-display --usb")
 
 
 def avahi_ok():
@@ -550,6 +631,9 @@ def avahi_ok():
 
 def show_pairing(pairing, port):
     hs, _ = hosts()
+    if not hs:
+        log("等待 iPad 通过 USB 连接… / waiting for the iPad on USB (--usb-doctor if it never shows up)")
+        return
     base = lambda h: f"http://{h}" + ("" if port == 80 else f":{port}")
     print(flush=True)
     log("在 iPad 上用相机扫描二维码 / scan with the iPad camera:")
@@ -574,14 +658,23 @@ def main():
                     help="where the iPad monitor sits relative to the built-in display (default %(default)s)")
     ap.add_argument("--scale", type=int, default=1, choices=(1, 2), help="GNOME UI scale for the iPad monitor (2 = HiDPI)")
     ap.add_argument("--fps", type=int, default=30, help="max frames per second (default %(default)s)")
-    ap.add_argument("--quality", type=int, default=75, help="JPEG quality 1-100 (default %(default)s)")
+    ap.add_argument("--quality", type=int, default=None, help="JPEG quality 1-100 (default 75, 85 with --usb)")
     ap.add_argument("--port", type=int, default=8800, help="HTTP port; 80 gives a bare http://host.local URL "
                     "(needs: sudo sysctl net.ipv4.ip_unprivileged_port_start=80)")
     ap.add_argument("--cookie-days", type=int, default=90, help="how long a paired iPad stays paired (default %(default)s)")
     ap.add_argument("--no-pairing", action="store_true", help="disable authentication (trusted networks only!)")
     ap.add_argument("--list-devices", action="store_true", help="list paired devices and exit")
     ap.add_argument("--forget", action="store_true", help="unpair all devices and exit")
+    ap.add_argument("--usb", action="store_true", help="USB cable only: serve only over the iPad's USB network link; "
+                    "the monitor appears when the iPad is plugged in and goes away when unplugged")
+    ap.add_argument("--usb-iface", default=None, help="treat this network interface as the iPad USB link")
+    ap.add_argument("--usb-doctor", action="store_true", help="diagnose the USB-cable connection and exit")
     a = ap.parse_args()
+    USB["only"], USB["iface"] = a.usb, a.usb_iface
+    if a.quality is None:
+        a.quality = 85 if a.usb else 75
+    if a.usb_doctor:
+        return usb_doctor()
 
     pairing = Pairing(a.cookie_days, enabled=not a.no_pairing)
     if a.list_devices:
@@ -614,11 +707,11 @@ def main():
     Gst.init(None)
     disp = Display(w, h, a.fps, a.quality, a.scale, a.position, auto, a.max_edge)
     srv.RequestHandlerClass = make_handler(disp, pairing)
-    disp.start()
     srv.daemon_threads = True
     threading.Thread(target=srv.serve_forever, daemon=True).start()
-
-    log(f"virtual monitor {w}x{h} created - arrange it in Settings > Displays")
+    if not a.usb or usb_ips():
+        disp.start()
+        log(f"virtual monitor {w}x{h} created")
     if a.no_pairing:
         log("WARNING: --no-pairing, anyone on the network can control this machine")
         log("open on the iPad: " + "  ".join(f"http://{x}:{a.port}" for x in hosts()[0]))
@@ -635,6 +728,36 @@ def main():
                 show_pairing(pairing, a.port)
             return True
         GLib.timeout_add_seconds(30, refresh)
+
+    if a.usb:
+        state = {"ips": usb_ips(), "lost": None}
+
+        def watch_usb():
+            ips = usb_ips()
+            if ips != state["ips"]:
+                state["ips"] = ips
+                if ips:
+                    log("iPad USB 已连接 / USB link up: " + ", ".join(sorted(ips)))
+                    if state["lost"]:
+                        GLib.source_remove(state["lost"])
+                        state["lost"] = None
+                    if not disp.rd_session:
+                        disp.start()
+                        log(f"virtual monitor {disp.w}x{disp.h} created")
+                    if not a.no_pairing:
+                        show_pairing(pairing, a.port)
+                else:
+                    log("iPad USB 已断开 / USB link down")
+
+                    def drop():
+                        state["lost"] = None
+                        if not usb_ips():
+                            disp.teardown()
+                            log("virtual monitor removed (plug the iPad back in to restore it)")
+                        return False
+                    state["lost"] = GLib.timeout_add_seconds(5, drop)  # survive a quick replug
+            return True
+        GLib.timeout_add_seconds(2, watch_usb)
 
     def quit_(*_):
         disp.loop.quit()
