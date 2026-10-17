@@ -761,6 +761,15 @@ def main():
         srv = ThreadingHTTPServer(("0.0.0.0", a.port), make_handler(None, pairing))
     except PermissionError:
         sys.exit(f"cannot bind port {a.port}; run: sudo sysctl net.ipv4.ip_unprivileged_port_start={a.port}")
+    except OSError as e:
+        if e.errno != 98:
+            raise
+        svc = subprocess.run(["systemctl", "--user", "is-active", "--quiet", "ipad-display-usb"]).returncode == 0
+        sys.exit(f"端口 {a.port} 已被占用 / port {a.port} is already in use.\n" + (
+            "  后台服务 ipad-display-usb 已在运行 / the ipad-display-usb service is already running:\n"
+            "    journalctl --user -u ipad-display-usb -f      # 查看配对码 / see the PIN\n"
+            "    systemctl --user stop ipad-display-usb        # 停止它 / stop it" if svc else
+            "  另一个 ipad-display 正在运行?/ another ipad-display running? (or use --port)"))
     Gst.init(None)
     disp = Display(w, h, a.fps, a.quality, a.scale, a.position, auto, a.max_edge)
     srv.RequestHandlerClass = make_handler(disp, pairing)
