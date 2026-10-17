@@ -796,10 +796,19 @@ def main():
         GLib.timeout_add_seconds(30, refresh)
 
     if a.usb:
-        state = {"ips": usb_ips(), "lost": None}
+        state = {"ips": usb_ips(), "lost": None, "hinted": False, "since": time.monotonic()}
 
         def watch_usb():
             ips = usb_ips()
+            if not ips and not state["hinted"] and time.monotonic() - state["since"] > 6:
+                links = usb_links()
+                if links:
+                    state["hinted"] = True
+                    log(f"数据线已连接({', '.join(links)}),但 iPad 没有打开 USB 网络(无载波)。")
+                    log("  → iPad:设置 → 个人热点 → 允许其他人加入。热点是灰色的话(无 SIM 等)USB 模式无法使用,")
+                    log("    请改用 Wi-Fi:./ipad-display --position left   详情:./ipad-display --usb-doctor")
+                    log(f"Cable is connected ({', '.join(links)}) but the iPad has not enabled USB networking (no carrier).")
+                    log("  -> turn on Personal Hotspot; if it is greyed out, USB mode cannot work - use Wi-Fi mode.")
             if ips != state["ips"]:
                 state["ips"] = ips
                 if ips:
