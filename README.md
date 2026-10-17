@@ -39,7 +39,8 @@ sudo apt install python3-gi gir1.2-gst-plugins-base-1.0 python3-gst-1.0 \
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
-| `--size` | `auto` | `auto`:自动匹配 iPad 屏幕比例(消除黑边);或固定 `宽x高`,如 `2048x1536` |
+| `--size` | `auto` | `auto`:按 iPad 屏幕比例(首次连接时学习,下次启动生效);或固定 `宽x高` |
+| `--orientation` | `landscape` | `landscape` 横屏 / `portrait` 竖屏,运行期间固定(与 Sidecar 一样) |
 | `--max-edge` | `1600` | auto 模式下长边像素,越大越清晰但越吃性能 |
 | `--position` | `right` | iPad 屏幕在内置屏幕的 `left` / `right` / `above` / `below` |
 | `--scale` | `1` | GNOME 界面缩放,`2` 为 HiDPI |
@@ -56,8 +57,12 @@ sudo apt install python3-gi gir1.2-gst-plugins-base-1.0 python3-gst-1.0 \
 
 ## 屏幕位置与黑边
 
-- GNOME 42 的“设置 → 显示器”不能拖动这块虚拟屏幕,所以用 `--position left|right|above|below` 指定位置。
-- 默认 `--size auto`:iPad 打开页面后会上报自己的可视区域,脚本据此重建虚拟显示器,使比例与 iPad 一致(旋转屏幕也会自动调整),比例会记在 `~/.config/ipad-display/size.json`。
+- GNOME 42 的“设置 → 显示器”不能拖动这块虚拟屏幕,所以用 `--position left|right|above|below` 指定位置;其他显示器变化导致 GNOME 重新排列时,脚本会自动把它放回原位。
+- **横竖屏在启动时选定,运行中不跟随旋转**(Apple Sidecar 也只支持横屏)。原因:GNOME 42 在虚拟显示器运行中改变尺寸时会绘制错误(下半部分变成灰色),只有在创建时就确定尺寸才正常。
+  - 横屏:`./ipad-display --position left`(默认)
+  - 竖屏:`./ipad-display --position left --orientation portrait`
+  - 拿反了方向时,iPad 上会提示“旋转到横屏/竖屏”。
+- 默认 `--size auto`:第一次连接时 iPad 会上报屏幕比例,脚本记在 `~/.config/ipad-display/size.json`,**下次启动**按这个比例创建显示器,从而没有黑边。
 - 为了没有黑边,请用「添加到主屏幕」的图标打开(全屏),不要在带地址栏的 Safari 标签里用。
 - 想要更清晰:`./ipad-display --max-edge 2048 --scale 2`(GNOME 界面 2 倍缩放,等效 1024 宽)。
 

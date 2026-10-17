@@ -33,11 +33,23 @@ CFG_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.
 SIZE_FILE = os.path.join(CFG_DIR, "size.json")
 
 
-def fit_size(edge, vw, vh):
-    """Monitor size with the viewport's aspect ratio and the given long edge (multiples of 8)."""
-    r = min(vw, vh) / max(vw, vh)
-    a, b = edge, max(64, int(round(edge * r / 8)) * 8)
-    return (a, b) if vw >= vh else (b, a)
+def fit_size(edge, ratio, portrait=False):
+    """Monitor size for a screen with short/long side `ratio`, long edge `edge` (multiples of 8)."""
+    a, b = edge, max(64, int(round(edge * ratio / 8)) * 8)
+    return (b, a) if portrait else (a, b)
+
+
+DEFAULT_RATIO = 1668 / 2388   # most current iPads are ~1.43:1 (Pro 11", Air, iPad 10)
+
+
+def load_ratio():
+    try:
+        with open(SIZE_FILE) as f:
+            d = json.load(f)
+        r = d.get("ratio") or min(d["w"], d["h"]) / max(d["w"], d["h"])
+        return float(r) if 0.3 < float(r) <= 1 else DEFAULT_RATIO
+    except (OSError, ValueError, KeyError, TypeError):
+        return DEFAULT_RATIO
 
 
 class Display:
@@ -53,8 +65,22 @@ class Display:
         self.seq = 0
         self.loop = GLib.MainLoop()
         self.pipeline = None
-        self.refit_timer = None
-        self.restarting = False
+        self.learned = None
+        self.layout_timer = None
+        # GNOME re-lays-out all monitors whenever any monitor changes; put ours back where it belongs.
+        self.bus.signal_subscribe(DC, DC, "MonitorsChanged", "/org/gnome/Mutter/DisplayConfig", None,
+                                  Gio.DBusSignalFlags.NONE, self._on_monitors_changed)
+
+    def _on_monitors_changed(self, *_):
+        if self.rd_session and (self.position != "right" or self.scale != 1):
+            if self.layout_timer:
+                GLib.source_remove(self.layout_timer)
+            self.layout_timer = GLib.timeout_add(1000, self._relayout)
+
+    def _relayout(self):
+        self.layout_timer = None
+        return self._apply_layout()
+
 
     def _call(self, name, path, iface, method, args, rtype):
         return self.bus.call_sync(name, path, iface, method, args,
@@ -75,7 +101,6 @@ class Display:
         self.sub = self.bus.signal_subscribe(SC, SC + ".Stream", "PipeWireStreamAdded", self.stream,
                                              None, Gio.DBusSignalFlags.NONE, self._on_node)
         self._call(RD, self.rd_session, RD + ".Session", "Start", None, "()")
-        self.restarting = False
 
     def _on_node(self, _c, _s, _p, _i, _sig, params):
         node = params[0]
@@ -128,8 +153,10 @@ class Display:
                     if m[6].get("is-current"):
                         cur[spec[0]], dim[spec[0]] = m[0], (m[1], m[2])
             items, virt = [], None
+            metas = [s[0] for *_, specs, _ in logicals for s in specs if s[0].startswith("Meta-")]
+            mine = [n for n in metas if dim[n] == (self.w, self.h)] or metas[-1:]  # ours = our size
             for x, y, sc, tr, prim, specs, _ in logicals:
-                is_v = any(s[0].startswith("Meta-") for s in specs)
+                is_v = any(s[0] in mine[:1] for s in specs)
                 sc = float(self.scale) if is_v else sc
                 w, h = dim[specs[0][0]]
                 if tr in (1, 3, 5, 7):
@@ -142,24 +169,31 @@ class Display:
                     virt = it
             if virt is None:
                 return False
+            before = [(i[0], i[1], i[2]) for i in items]
             others = [i for i in items if i is not virt]
             vw, vh = virt[6], virt[7]
             if others:
+                # put the other monitors back at the origin, then attach ours on the requested side
                 minx, miny = min(i[0] for i in others), min(i[1] for i in others)
+                for i in others:
+                    i[0] -= minx
+                    i[1] -= miny
                 maxx, maxy = max(i[0] + i[6] for i in others), max(i[1] + i[7] for i in others)
                 pos = self.position
                 if pos == "right":
-                    virt[0], virt[1] = maxx, miny
+                    virt[0], virt[1] = maxx, 0
                 elif pos == "below":
-                    virt[0], virt[1] = minx, maxy
+                    virt[0], virt[1] = 0, maxy
                 elif pos == "left":
                     for i in others:
                         i[0] += vw
-                    virt[0], virt[1] = minx, miny
+                    virt[0], virt[1] = 0, 0
                 elif pos == "above":
                     for i in others:
                         i[1] += vh
-                    virt[0], virt[1] = minx, miny
+                    virt[0], virt[1] = 0, 0
+            if [(i[0], i[1], i[2]) for i in items] == before:
+                return False
             new = [(i[0], i[1], i[2], i[3], i[4], i[5]) for i in items]
             self._call(DC, "/org/gnome/Mutter/DisplayConfig", DC, "ApplyMonitorsConfig",
                        GLib.Variant("(uua(iiduba(ssa{sv}))a{sv})", (serial, 1, new, {})), None)
@@ -168,43 +202,30 @@ class Display:
             log("could not arrange the monitor:", e)
         return False
 
-    # --- fit the monitor to the iPad's viewport --------------------------
+    # --- learn the iPad's shape -------------------------------------------
+    # GNOME 42 draws a virtual monitor wrongly (grey area) if its size changes while it exists,
+    # so - like Sidecar, which is landscape-only - the size is fixed for the whole run.  We only
+    # remember the iPad's shape so the next start fits it exactly.
     def request_fit(self, vw, vh):
-        """Called (from any thread) when the iPad reports its viewport size."""
         if not self.auto or vw < 100 or vh < 100:
             return
-        GLib.idle_add(self._schedule_fit, float(vw), float(vh))
-
-    def _schedule_fit(self, vw, vh):
-        tw, th = fit_size(self.edge, vw, vh)
-        if abs((tw / th) / (self.w / self.h) - 1) < 0.03:
-            if self.refit_timer:
-                GLib.source_remove(self.refit_timer)
-                self.refit_timer = None
-            return False
-        if self.refit_timer:
-            GLib.source_remove(self.refit_timer)
-        self.refit_timer = GLib.timeout_add(1200, self._refit, tw, th)  # debounce rotation / bars
-        return False
-
-    def _refit(self, tw, th):
-        self.refit_timer = None
-        log(f"iPad viewport is {tw}x{th} shaped: recreating the virtual monitor (was {self.w}x{self.h})")
-        self.restarting = True
-        self.teardown()
-        self.w, self.h = tw, th
+        r = min(vw, vh) / max(vw, vh)
+        mine = min(self.w, self.h) / max(self.w, self.h)
+        if abs(r / mine - 1) < 0.03 or self.learned == round(r, 3):
+            return
+        self.learned = round(r, 3)
         try:
             os.makedirs(CFG_DIR, mode=0o700, exist_ok=True)
             with open(SIZE_FILE, "w") as f:
-                json.dump({"w": tw, "h": th}, f)
+                json.dump({"ratio": r}, f)
         except OSError:
             pass
-        GLib.timeout_add(800, lambda: (self.start(), False)[1])
-        return False
+        log(f"iPad 屏幕比例 {1 / r:.2f}:1,已记住,下次启动生效 / iPad shape {1 / r:.2f}:1 saved - "
+            "restart ipad-display to remove the borders")
 
     # --- input -----------------------------------------------------------
     def _notify(self, method, fmt, args):
-        if not self.rd_session or self.restarting:
+        if not self.rd_session:
             return
         self.bus.call(RD, self.rd_session, RD + ".Session", method,
                       GLib.Variant(fmt, args), None, Gio.DBusCallFlags.NO_AUTO_START, -1, None, None, None)
@@ -246,8 +267,11 @@ PAGE = r"""<!doctype html><html><head><meta charset=utf-8>
 <style>html,body{margin:0;height:100%;background:#000;overflow:hidden;touch-action:none;
 -webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
 #v{position:fixed;inset:0;width:100%;height:100%;object-fit:contain}
-#s{position:fixed;top:6px;left:8px;color:#8a8;font:12px system-ui;pointer-events:none}</style></head>
-<body><img id=v alt=""><div id=s>connecting…</div>
+#s{position:fixed;top:6px;left:8px;color:#8a8;font:12px system-ui;pointer-events:none}
+#h{position:fixed;left:0;right:0;bottom:24px;display:none;justify-content:center;pointer-events:none}
+#h:not(:empty)::before{content:'\21bb';margin-right:8px}
+#h{color:#fff;font:600 16px system-ui;text-shadow:0 1px 4px #000}</style></head>
+<body><img id=v alt=""><div id=s>connecting…</div><div id=h></div>
 <script>
 const v=document.getElementById('v'), st=document.getElementById('s');
 v.src='/stream';
@@ -263,9 +287,15 @@ let pend=null,raf=0,sdx=0,sdy=0,vt=null;
 function flush(){raf=0;if(pend){raw({t:'m',...pend});pend=null}if(sdx||sdy){raw({t:'s',dx:sdx,dy:sdy});sdx=sdy=0}}
 const send=o=>{flush();raw(o)};
 const later=()=>{if(!raf)raf=requestAnimationFrame(flush)};
-function view(){raw({t:'v',w:innerWidth,h:innerHeight})}
-addEventListener('resize',()=>{clearTimeout(vt);vt=setTimeout(view,800)});
-addEventListener('orientationchange',()=>{clearTimeout(vt);vt=setTimeout(view,800)});
+// tell the server our screen shape once (it is used on the next start; the monitor never resizes live)
+function view(){const o=innerWidth>innerHeight,w=Math.max(screen.width,screen.height),h=Math.min(screen.width,screen.height);
+ raw({t:'v',w:o?w:h,h:o?h:w})}
+// held the other way round than the desktop? say so instead of showing a tiny letterboxed screen
+const hint=document.getElementById('h');
+function orient(){const land=(v.naturalWidth||1)>=(v.naturalHeight||1);
+ hint.textContent=land?'横屏使用 · rotate to landscape':'竖屏使用 · rotate to portrait';
+ hint.style.display=(innerWidth>innerHeight)!==land&&v.naturalWidth?'flex':'none'}
+v.addEventListener('load',orient);addEventListener('resize',orient);setInterval(orient,1000);
 function norm(e){ // map client coords to the letterboxed image rect
  const W=v.naturalWidth||1,H=v.naturalHeight||1,cw=innerWidth,ch=innerHeight,s=Math.min(cw/W,ch/H);
  const w=W*s,h=H*s,ox=(cw-w)/2,oy=(ch-h)/2;
@@ -707,10 +737,12 @@ def show_pairing(pairing, port):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--size", default="auto", help="'auto' (default): match the iPad's screen shape, long edge "
-                    "--max-edge; or fixed WxH pixels, e.g. 2048x1536")
+    ap.add_argument("--size", default="auto", help="'auto' (default): the iPad's screen shape (learned on first "
+                    "connect), long edge --max-edge; or fixed WxH pixels, e.g. 2048x1536")
     ap.add_argument("--max-edge", type=int, default=1600, help="long edge in pixels for --size auto (default %(default)s; "
                     "bigger = sharper but heavier)")
+    ap.add_argument("--orientation", default="landscape", choices=("landscape", "portrait"),
+                    help="how you hold the iPad; fixed for the run, like Sidecar (default %(default)s)")
     ap.add_argument("--position", default="right", choices=("left", "right", "above", "below"),
                     help="where the iPad monitor sits relative to the built-in display (default %(default)s)")
     ap.add_argument("--scale", type=int, default=1, choices=(1, 2), help="GNOME UI scale for the iPad monitor (2 = HiDPI)")
@@ -747,14 +779,7 @@ def main():
 
     auto = a.size.lower() == "auto"
     if auto:
-        try:
-            with open(SIZE_FILE) as f:
-                d = json.load(f)
-            w, h = int(d["w"]), int(d["h"])
-            if max(w, h) != a.max_edge:
-                w, h = fit_size(a.max_edge, w, h)
-        except (OSError, ValueError, KeyError):
-            w, h = fit_size(a.max_edge, 4, 3)
+        w, h = fit_size(a.max_edge, load_ratio(), a.orientation == "portrait")
     else:
         w, h = (int(x) for x in a.size.lower().split("x"))
     try:
