@@ -46,7 +46,7 @@ def load_ratio():
     try:
         with open(SIZE_FILE) as f:
             d = json.load(f)
-        r = d.get("ratio") or min(d["w"], d["h"]) / max(d["w"], d["h"])
+        r = d["ratio"]  # files from older versions stored w/h of a Safari tab (toolbars) - ignore them
         return float(r) if 0.3 < float(r) <= 1 else DEFAULT_RATIO
     except (OSError, ValueError, KeyError, TypeError):
         return DEFAULT_RATIO
