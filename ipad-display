@@ -617,7 +617,18 @@ def usb_doctor():
     print(f" {ok(have_ip)} 6. 已获得 IP / got an IP: " +
           ", ".join(f"{d}={'/'.join(v) or '-'}" for d, v in links.items()))
     if links and not have_ip:
-        print(f"      nmcli device connect {next(iter(links))}")
+        dev = next(iter(links))
+        try:
+            carrier = open(f"/sys/class/net/{dev}/carrier").read().strip() == "1"
+        except OSError:
+            carrier = False
+        if not carrier:
+            print("      没有载波:iPad 还没打开 USB 网络 / no carrier: the iPad has not enabled its side yet")
+            print("      iPad 解锁 → 设置 → 个人热点 → 打开“允许其他人加入”,并在“信任此电脑”时点信任")
+            print("      Unlock iPad > Settings > Personal Hotspot > Allow Others to Join; tap Trust if asked")
+            print("      仍不行就拔掉线重插一次 / if it stays down, unplug and replug once")
+        else:
+            print(f"      nmcli device connect {dev}")
     if have_ip:
         dev = next(d for d, v in links.items() if v)
         r = subprocess.run(["ping", "-c", "1", "-W", "1", "-I", dev, USB_GW], capture_output=True)
