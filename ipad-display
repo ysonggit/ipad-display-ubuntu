@@ -584,6 +584,39 @@ def hosts():
     return usb + [local] + lan, bool(usb)
 
 
+def ipad_info():
+    """Ask the iPad's lockdownd (via usbmuxd, no pairing needed) for its model and cellular capability."""
+    import plistlib
+
+    def mux_req(sock, d):
+        p = plistlib.dumps(d)
+        sock.sendall(struct.pack("<IIII", 16 + len(p), 1, 8, 1) + p)
+        n = struct.unpack("<I", sock.recv(16, socket.MSG_WAITALL)[:4])[0]
+        return plistlib.loads(sock.recv(n - 16, socket.MSG_WAITALL))
+    try:
+        sock = socket.socket(socket.AF_UNIX)
+        sock.settimeout(3)
+        sock.connect("/var/run/usbmuxd")
+        devs = mux_req(sock, {"MessageType": "ListDevices", "ClientVersionString": "ipd", "ProgName": "ipd"})["DeviceList"]
+        sock.close()
+        if not devs:
+            return None
+        sock = socket.socket(socket.AF_UNIX)
+        sock.settimeout(3)
+        sock.connect("/var/run/usbmuxd")
+        if mux_req(sock, {"MessageType": "Connect", "DeviceID": devs[0]["DeviceID"], "PortNumber": socket.htons(62078),
+                          "ClientVersionString": "ipd", "ProgName": "ipd"}).get("Number") != 0:
+            return None
+        p = plistlib.dumps({"Label": "ipd", "Request": "GetValue"})
+        sock.sendall(struct.pack(">I", len(p)) + p)
+        n = struct.unpack(">I", sock.recv(4, socket.MSG_WAITALL))[0]
+        v = plistlib.loads(sock.recv(n, socket.MSG_WAITALL)).get("Value", {})
+        sock.close()
+        return {k: v.get(k) for k in ("ProductType", "ProductVersion", "TelephonyCapability")}
+    except (OSError, ValueError, KeyError, struct.error):
+        return None
+
+
 def usb_doctor():
     """Explain, step by step, what is missing for a USB-cable connection."""
     ok = lambda b: "\u2713" if b else "\u2717"
@@ -595,6 +628,14 @@ def usb_doctor():
         print("      " + l)
     if not apple:
         print("      插上数据线,iPad 解锁,弹出“信任此电脑”时点信任 / plug in, unlock, tap Trust")
+    info = ipad_info() if apple else None
+    if info:
+        cell = bool(info.get("TelephonyCapability"))
+        print(f"      型号 / model {info['ProductType']}, iPadOS {info['ProductVersion']}, "
+              f"{'蜂窝版 / cellular' if cell else '仅 Wi-Fi / Wi-Fi only'}")
+        if not cell:
+            print("      仅 Wi-Fi 版没有个人热点 → 不能用 USB 网络;用 Wi-Fi,或用以太网转接器(见 README)")
+            print("      Wi-Fi-only: no Personal Hotspot -> use Wi-Fi, or Ethernet adapters (see README)")
     mod = subprocess.run(["modinfo", "ipheth"], capture_output=True).returncode == 0
     print(f" {ok(mod)} 2. 内核驱动 ipheth / kernel driver ipheth")
     mux = shutil.which("usbmuxd") is not None
@@ -627,6 +668,11 @@ def usb_doctor():
             print("      iPad 解锁 → 设置 → 个人热点 → 打开“允许其他人加入”,并在“信任此电脑”时点信任")
             print("      Unlock iPad > Settings > Personal Hotspot > Allow Others to Join; tap Trust if asked")
             print("      仍不行就拔掉线重插一次 / if it stays down, unplug and replug once")
+            print("      个人热点是灰色/被强制关闭?需要:装有 SIM 且蜂窝数据已打开、运营商允许热点、")
+            print("      屏幕使用时间 → 内容与隐私访问限制 → 蜂窝数据更改 = 允许、没有描述文件(MDM)禁止。")
+            print("      没有 SIM / 运营商不支持 → 用以太网转接器方案(见 README)或 Wi-Fi。")
+            print("      Hotspot greyed out? Needs a SIM with cellular data on, a carrier that allows it,")
+            print("      Screen Time > Content & Privacy > Cellular Data Changes = Allow, and no MDM block.")
         else:
             print(f"      nmcli device connect {dev}")
     if have_ip:

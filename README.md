@@ -100,6 +100,27 @@ journalctl --user -u ipad-display-usb -f    # 查看配对码
 >
 > **仅 Wi-Fi 版 iPad 没有“个人热点”**,无法建立 USB 网络,只能用 Wi-Fi 模式。
 
+### 个人热点打不开(灰色 / 被强制关闭)时
+
+iOS 只有在**装了 SIM、蜂窝数据已打开、运营商允许热点**时才能开个人热点;
+屏幕使用时间里的“蜂窝数据更改 = 不允许”或公司 MDM 描述文件也会禁用它。没有 SIM 就无法开启。
+
+替代的有线方案:**以太网转接器**(USB-C 口的 iPad 原生支持)
+
+```
+iPad ─ USB-C 以太网转接器 ─ 网线 ─ USB-C 以太网转接器 ─ MacBook Pro (Ubuntu)
+```
+
+```bash
+ip -br link                                   # 找到电脑上的以太网网卡名,例如 enx00e04c680001
+nmcli connection add type ethernet ifname enx00e04c680001 con-name ipad-eth ipv4.method shared
+./ipad-display --usb --usb-iface enx00e04c680001 --position left
+```
+
+`ipv4.method shared` 让 Ubuntu 在这根网线上做 DHCP(电脑是 `10.42.0.1`),iPad 自动拿到地址;
+`--usb-iface` 让脚本只在这块网卡上服务,其余行为与 USB 模式相同(插线出现显示器、拔线移除)。
+千兆有线,延迟比 Wi-Fi 稳定;用带 PD 供电口的转接器还能同时给 iPad 充电。
+
 ## 已知限制
 
 - 依赖 Mutter 的私有 D-Bus 接口(`ScreenCast.RecordVirtual` / `RemoteDesktop`),在 GNOME 42 上验证,其他版本可能失效。
