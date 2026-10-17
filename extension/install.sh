@@ -1,15 +1,36 @@
 #!/bin/sh
-# Install the iPad Display helper GNOME Shell extension for this user.
+# Install the iPad Display top-bar menu (GNOME Shell extension) and its background service.
 # On Wayland GNOME only loads new extensions at login: log out and back in afterwards.
 set -e
 UUID=ipad-display-helper@ysonggit.github.io
-SRC=$(dirname "$0")/$UUID
-DST=$HOME/.local/share/gnome-shell/extensions/$UUID
+HERE=$(cd "$(dirname "$0")" && pwd)
+REPO=$(dirname "$HERE")
+EXT=$HOME/.local/share/gnome-shell/extensions/$UUID
+UNITS=$HOME/.config/systemd/user
 
-mkdir -p "$DST"
-cp "$SRC"/metadata.json "$SRC"/extension.js "$DST"/
+# 1. extension
+mkdir -p "$EXT"
+cp "$HERE/$UUID"/metadata.json "$HERE/$UUID"/extension.js "$EXT"/
 
-# add to enabled-extensions (works before the shell has seen the extension)
+# 2. user service, pointing at this checkout
+mkdir -p "$UNITS"
+sed "s|@SCRIPT@|$REPO/ipad-display|" "$REPO/contrib/ipad-display.service" > "$UNITS/ipad-display.service"
+# the older USB-only service is replaced by the menu
+if [ -f "$UNITS/ipad-display-usb.service" ]; then
+    systemctl --user disable --now ipad-display-usb.service 2>/dev/null || true
+    rm -f "$UNITS/ipad-display-usb.service"
+fi
+systemctl --user daemon-reload
+
+# 3. default options (the menu changes them)
+CONF=$HOME/.config/ipad-display
+if [ ! -f "$CONF/service.env" ]; then
+    mkdir -p "$CONF"
+    printf '# written by the iPad Display top-bar menu\nIPAD_DISPLAY_ARGS=--orientation landscape --position left\n' \
+        > "$CONF/service.env"
+fi
+
+# 4. enable the extension (works before the shell has seen it)
 python3 - "$UUID" <<'EOF'
 import ast, subprocess, sys
 uuid = sys.argv[1]
@@ -21,5 +42,6 @@ if uuid not in lst:
     subprocess.run(["gsettings", "set", "org.gnome.shell", "enabled-extensions", str(lst)], check=True)
 EOF
 
-echo "installed $UUID"
-echo "log out and back in to load it (GNOME on Wayland cannot reload extensions live)"
+command -v qrencode >/dev/null || echo "tip: sudo apt install qrencode   (QR code in the menu)"
+echo "installed: top-bar menu + ipad-display.service"
+echo "log out and back in once, then click the iPad icon in the top bar"

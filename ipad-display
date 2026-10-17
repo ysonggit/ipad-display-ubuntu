@@ -33,6 +33,48 @@ CFG_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.
 SIZE_FILE = os.path.join(CFG_DIR, "size.json")
 
 
+RUN_DIR = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "ipad-display")
+
+
+class Status:
+    """Live state for the GNOME top-bar menu: $XDG_RUNTIME_DIR/ipad-display/status.json."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.d = {"pid": os.getpid(), "monitor": None, "clients": 0, "url": None, "pin": None,
+                  "qr": None, "paired_devices": 0, "waiting_usb": False}
+
+    def set(self, **kw):
+        with self.lock:
+            self.d.update(kw)
+            self._write()
+
+    def add(self, key, n):
+        with self.lock:
+            self.d[key] += n
+            self._write()
+
+    def _write(self):
+        try:
+            os.makedirs(RUN_DIR, mode=0o700, exist_ok=True)
+            tmp = os.path.join(RUN_DIR, ".status.tmp")
+            with open(tmp, "w") as f:
+                json.dump(self.d, f)
+            os.replace(tmp, os.path.join(RUN_DIR, "status.json"))
+        except OSError:
+            pass
+
+    def clear(self):
+        for f in os.listdir(RUN_DIR) if os.path.isdir(RUN_DIR) else []:
+            try:
+                os.remove(os.path.join(RUN_DIR, f))
+            except OSError:
+                pass
+
+
+STATUS = Status()
+
+
 def fit_size(edge, ratio, portrait=False):
     """Monitor size for a screen with short/long side `ratio`, long edge `edge` (multiples of 8)."""
     a, b = edge, max(64, int(round(edge * ratio / 8)) * 8)
@@ -101,6 +143,7 @@ class Display:
         self.sub = self.bus.signal_subscribe(SC, SC + ".Stream", "PipeWireStreamAdded", self.stream,
                                              None, Gio.DBusSignalFlags.NONE, self._on_node)
         self._call(RD, self.rd_session, RD + ".Session", "Start", None, "()")
+        STATUS.set(monitor=f"{self.w}x{self.h}")
 
     def _on_node(self, _c, _s, _p, _i, _sig, params):
         node = params[0]
@@ -250,6 +293,7 @@ class Display:
             self.bus.signal_unsubscribe(self.sub)
             self.sub = None
         path, self.rd_session = self.rd_session, None
+        STATUS.set(monitor=None)
         try:
             if path:
                 self._call(RD, path, RD + ".Session", "Stop", None, "()")
@@ -545,6 +589,7 @@ def make_handler(disp, pairing):
             self.wfile.flush()
             self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             rf = self.rfile
+            STATUS.add("clients", 1)
             try:
                 while True:
                     b1, b2 = rf.read(2)
@@ -566,6 +611,8 @@ def make_handler(disp, pairing):
                             pass
             except (ValueError, OSError):
                 pass
+            finally:
+                STATUS.add("clients", -1)
             self.close_connection = True
 
     return H
@@ -719,9 +766,19 @@ def avahi_ok():
 def show_pairing(pairing, port):
     hs, _ = hosts()
     if not hs:
+        STATUS.set(url=None, pin=None, qr=None, waiting_usb=True)
         log("等待 iPad 通过 USB 连接… / waiting for the iPad on USB (--usb-doctor if it never shows up)")
         return
     base = lambda h: f"http://{h}" + ("" if port == 80 else f":{port}")
+    qr = None
+    if shutil.which("qrencode"):
+        os.makedirs(RUN_DIR, mode=0o700, exist_ok=True)
+        for f in os.listdir(RUN_DIR):
+            if f.startswith("qr-"):
+                os.remove(os.path.join(RUN_DIR, f))
+        qr = os.path.join(RUN_DIR, f"qr-{pairing.pin}.png")  # new name per code: the menu reloads it
+        subprocess.run(["qrencode", "-o", qr, "-s", "6", "-m", "2", f"{base(hs[0])}/pair?t={pairing.token}"])
+    STATUS.set(url=base(hs[0]), pin=pairing.pin, qr=qr, paired_devices=len(pairing.devices), waiting_usb=False)
     print(flush=True)
     log("在 iPad 上用相机扫描二维码 / scan with the iPad camera:")
     if shutil.which("qrencode"):
@@ -806,6 +863,7 @@ def main():
     if a.no_pairing:
         log("WARNING: --no-pairing, anyone on the network can control this machine")
         log("open on the iPad: " + "  ".join(f"http://{x}:{a.port}" for x in hosts()[0]))
+        STATUS.set(url=f"http://{hosts()[0][0]}:{a.port}" if hosts()[0] else None)
     else:
         if not avahi_ok():
             log("avahi-daemon 未运行,.local 地址可能无法使用 / avahi-daemon is not running, .local names may fail")
@@ -870,6 +928,7 @@ def main():
         log("stopping")
         disp.stop()
         srv.shutdown()
+        STATUS.clear()
 
 
 if __name__ == "__main__":

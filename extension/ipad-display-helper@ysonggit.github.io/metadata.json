@@ -1,8 +1,12 @@
 {
     "uuid": "ipad-display-helper@ysonggit.github.io",
-    "name": "iPad Display helper",
-    "description": "Windows moved onto the ipad-display monitor fill the iPad screen (maximized, or shrunk to fit if they cannot be maximized).",
-    "shell-version": ["42", "43", "44"],
+    "name": "iPad Display",
+    "description": "Top-bar menu to start/stop ipad-display (pairing QR code, orientation, position, Wi-Fi/USB), and windows moved onto the iPad monitor fill the iPad screen.",
+    "shell-version": [
+        "42",
+        "43",
+        "44"
+    ],
     "url": "https://github.com/ysonggit/ipad-display-ubuntu",
-    "version": 1
+    "version": 2
 }

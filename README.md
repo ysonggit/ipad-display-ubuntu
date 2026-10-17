@@ -10,21 +10,28 @@ iPad 端**无需安装任何 App**,只用 Safari。完整原理与图文说明�
 ```bash
 sudo apt install python3-gi gir1.2-gst-plugins-base-1.0 python3-gst-1.0 \
   gstreamer1.0-pipewire gstreamer1.0-plugins-good gstreamer1.0-plugins-base qrencode
-./ipad-display --position left
+./extension/install.sh        # 顶栏菜单 + 后台服务;然后注销并重新登录一次
 ```
 
-**第一次(配对,不用打字):**
+之后**不用命令行**:点顶栏的 **iPad 图标**:
 
-1. 终端会显示二维码,用 iPad **相机**扫描,Safari 自动打开并完成配对;
-2. 分享 → 添加到主屏幕;
-3. 把窗口拖到新出现的显示器上,或在 设置 → 显示器 中调整位置。
+- 打开开关 → 虚拟显示器出现,菜单里直接显示**二维码和配对码**;
+- 用 iPad 相机扫码配对,分享 → 添加到主屏幕;以后点图标即可;
+- 菜单里选 **横屏/竖屏**、**左/右/上/下**、**Wi-Fi/USB**(运行中修改会自动重启生效);
+- 打开“登录时启动”,开机后自动可用。
 
-**以后:** 运行脚本,点主屏幕图标即可。Ctrl+C 退出,虚拟显示器随之消失。
+同一个扩展还会让拖到 iPad 上的窗口自动铺满 iPad(见下文)。
 
-不方便扫码(或没装 `qrencode`)时,在 Safari 打开 `http://主机名.local:8800`,输入终端显示的 **6 位配对码**。
-如果主屏幕图标提示输入配对码,在终端里看新的码输入一次即可(iOS 的主屏幕 App 有独立的 Cookie 存储)。
+<details><summary>命令行用法(可选)</summary>
 
-每台 iPad 配对后保存 90 天;配对码和二维码是一次性的,用过即换新,30 分钟未用也会换新。
+```bash
+./ipad-display --position left                         # 横屏
+./ipad-display --position left --orientation portrait  # 竖屏
+```
+
+终端会显示二维码和配对码;Ctrl+C 退出。不要和顶栏菜单启动的服务同时运行(会抢 8800 端口)。
+
+</details>
 
 ## 触控操作
 
@@ -72,9 +79,7 @@ GNOME 不会在窗口移到另一块显示器时调整大小,窗口拖到较小�
 附带的扩展让落到 iPad 显示器上的窗口**自动最大化、铺满 iPad**;不能最大化的窗口和对话框会缩小并移到屏幕内。
 拖回笔记本屏幕时,GNOME 会自动恢复原来的大小。
 
-```bash
-./extension/install.sh      # 然后注销并重新登录一次(Wayland 下扩展只在登录时加载)
-```
+由 `./extension/install.sh` 一并安装(和顶栏菜单是同一个扩展)。
 
 - 适用于:鼠标拖过去松手、`Super+Shift+→/←` 移过去、直接在 iPad 上打开的新窗口。
 - 不影响桌面图标(DING)等辅助窗口和全屏窗口。
@@ -105,14 +110,7 @@ iPad 自己是 `172.20.10.1`,Ubuntu 拿到 `172.20.10.x`,画面和触控都走�
 - 插上线才创建虚拟显示器,拔掉 5 秒后自动移除(5 秒内重新插上不受影响);
 - JPEG 质量默认提高到 85(线缆带宽充足)。
 
-开机自动运行(插线即用):
-
-```bash
-mkdir -p ~/.config/systemd/user
-cp contrib/ipad-display-usb.service ~/.config/systemd/user/
-systemctl --user daemon-reload && systemctl --user enable --now ipad-display-usb
-journalctl --user -u ipad-display-usb -f    # 查看配对码
-```
+开机自动运行:在顶栏菜单里选“连接 → USB”,并打开“登录时启动”。
 
 > 关于雷雳 / USB 3 线:iPad 的 USB 网络是 USB 2 级别(约几百 Mbit/s),线缆规格不影响速度;
 > 但这已远超画面所需(约 3–8 MB/s),优势在于延迟稳定、不受 Wi-Fi 干扰,同时还能给 iPad 充电。

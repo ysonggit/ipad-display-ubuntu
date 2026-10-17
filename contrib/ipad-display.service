@@ -1,0 +1,15 @@
+# Runs ipad-display in the background; the GNOME top-bar menu (extension/) starts/stops it
+# and writes the options to ~/.config/ipad-display/service.env. Installed by extension/install.sh.
+[Unit]
+Description=iPad as a second display
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+EnvironmentFile=-%h/.config/ipad-display/service.env
+ExecStart=@SCRIPT@ $IPAD_DISPLAY_ARGS
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

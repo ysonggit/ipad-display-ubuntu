@@ -46,17 +46,10 @@ a{color:var(--acc)}
 <h2>2. 安装与使用</h2>
 <pre><code>sudo apt install python3-gi gir1.2-gst-plugins-base-1.0 python3-gst-1.0 \
   gstreamer1.0-pipewire gstreamer1.0-plugins-good gstreamer1.0-plugins-base qrencode
-./ipad-display --position left</code></pre>
-<div class="card"><strong>第一次(配对):</strong>用 iPad 相机扫终端里的二维码 → Safari 自动打开并配对 → 分享 → 添加到主屏幕。<br>
-<strong>以后:</strong>运行脚本,点主屏幕图标即可,不用输入任何东西。</div>
-<ul>
-<li>地址是固定的 <code>http://主机名.local:8800</code>(Ubuntu 自带 Avahi),不受 DHCP 变化影响。</li>
-<li>不方便扫码时,打开该地址并输入终端里的 <strong>6 位配对码</strong>。</li>
-<li>二维码和配对码一次性使用,用后自动更换;30 分钟没用也会更换。配对后的 iPad 记住 90 天。</li>
-<li>如果主屏幕图标要求输入配对码(iOS 主屏幕 App 的 Cookie 独立),按终端里的新码输入一次即可。</li>
-<li>想要不带端口的地址:<code>sudo sysctl net.ipv4.ip_unprivileged_port_start=80</code>,然后加 <code>--port 80</code>。</li>
-<li>管理设备:<code>--list-devices</code> 查看,<code>--forget</code> 全部取消配对。</li>
-</ul>
+./extension/install.sh      # 顶栏菜单 + 后台服务,然后注销并重新登录一次</code></pre>
+<div class="card"><strong>不用命令行:</strong>点顶栏的 <strong>iPad 图标</strong> → 打开开关。菜单里直接显示二维码和配对码,也可以选择横屏/竖屏、位置、Wi-Fi/USB,以及“登录时启动”。<br>
+<strong>第一次:</strong>iPad 相机扫码 → 配对 → 分享 → 添加到主屏幕。<strong>以后:</strong>点主屏幕图标即可。</div>
+<p>命令行方式(可选):<code>./ipad-display --position left</code>,竖屏加 <code>--orientation portrait</code>。</p>
 
 <h2>3. 触控手势</h2>
 <table><tr><th>手势</th><th>效果</th></tr>
@@ -102,7 +95,7 @@ a{color:var(--acc)}
 <ul>
 <li><strong>只走 USB:</strong>来自 Wi-Fi 等其他网卡的请求一律拒绝。</li>
 <li><strong>即插即用:</strong>插线才出现虚拟显示器,拔线 5 秒后移除;5 秒内重插不受影响。</li>
-<li><strong>开机自启:</strong>见 <code>contrib/ipad-display-usb.service</code>(systemd 用户服务),<code>journalctl --user -u ipad-display-usb -f</code> 查看配对码。</li>
+<li><strong>开机自启:</strong>顶栏菜单里选“连接 → USB”,并打开“登录时启动”。</li>
 <li><strong>关于雷雳 / USB 3 线:</strong>iPad 的 USB 网络是 USB 2 级别,线缆规格不影响速度,但带宽仍远超画面所需;优势是延迟稳定、不受 Wi-Fi 干扰,还能充电。</li>
 <li><strong>限制:</strong>仅 Wi-Fi 版 iPad 没有个人热点,只能用 Wi-Fi 模式。</li>
 </ul>
