@@ -196,11 +196,33 @@ class Indicator extends PanelMenu.Button {
         });
         this._monitor = Gio.File.new_for_path(STATUS_FILE).monitor_file(Gio.FileMonitorFlags.NONE, null);
         this._monitor.connect('changed', () => this._showStatus());
+        // The applications-menu launcher (ipad-display-app) asks us to open by creating "open-menu".
+        GLib.mkdir_with_parents(RUN_DIR, 0o700);
+        this._dirMonitor = Gio.File.new_for_path(RUN_DIR).monitor_directory(Gio.FileMonitorFlags.NONE, null);
+        this._dirMonitor.connect('changed', (_m, file, _other, event) => {
+            if (file.get_basename() === 'open-menu' && event === Gio.FileMonitorEvent.CREATED)
+                this._openFromLauncher(file);
+        });
         this._timer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 5, () => {
             this._refresh();
             return GLib.SOURCE_CONTINUE;
         });
         this._refresh();
+    }
+
+    _openFromLauncher(file) {
+        try {
+            file.delete(null);  // tells the launcher we handled it
+        } catch (e) {
+            return;  // already handled
+        }
+        if (Main.overview.visible)
+            Main.overview.hide();
+        GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
+            this._refresh();
+            this.menu.open();
+            return GLib.SOURCE_REMOVE;
+        });
     }
 
     _addChoice(title, key, options) {
@@ -287,6 +309,10 @@ class Indicator extends PanelMenu.Button {
         if (this._monitor) {
             this._monitor.cancel();
             this._monitor = null;
+        }
+        if (this._dirMonitor) {
+            this._dirMonitor.cancel();
+            this._dirMonitor = null;
         }
         super.destroy();
     }

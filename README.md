@@ -4,7 +4,7 @@
 *Use an iPad as a second display on Ubuntu 22.04 (GNOME/Wayland), like macOS Sidecar.*
 
 - iPad 端**无需安装任何 App**,只用 Safari;
-- 电脑端通过**顶栏菜单**一键开关,不用敲命令;
+- 电脑端从**应用程序菜单**或**顶栏菜单**一键开关,不用敲命令;
 - 触控操作电脑,拖到 iPad 上的窗口自动铺满;
 - 支持 Wi-Fi 和 USB 数据线(个人热点)。
 
@@ -21,9 +21,24 @@ git clone https://github.com/ysonggit/ipad-display-ubuntu ~/ipad-display-ubuntu
 ~/ipad-display-ubuntu/extension/install.sh
 ```
 
-然后**注销并重新登录一次**(Wayland 下 GNOME 扩展只在登录时加载)。顶栏右上角会出现一个 **iPad 图标**。
+然后**注销并重新登录一次**(Wayland 下 GNOME 扩展只在登录时加载)。之后:
+
+- 应用程序菜单里有 **iPad Display / iPad 显示器** 应用(可以搜索,也可以固定到 Dock);
+- 顶栏右上角有一个 **iPad 图标**。
 
 > 登录时要选 **Ubuntu(Wayland)** 会话,Xorg 会话不支持。
+
+## 启动:应用程序菜单
+
+<img src="data/ipad-display.svg" width="64" alt="iPad Display 图标">
+
+按 Super 键打开活动视图,搜索 **iPad**(或在“显示应用程序”里找到 **iPad Display**),点一下:
+
+- 打开 iPad 显示器,并**自动弹出顶栏菜单**,显示二维码和配对码;
+- 已经打开时再点,只弹出菜单(可在菜单里关闭);
+- 在 Dock 上右键图标 → **关闭**,直接关闭 iPad 显示器。
+
+右键图标选“添加到收藏夹”即可固定在 Dock 上。
 
 ## 使用:顶栏 iPad 菜单
 
@@ -181,6 +196,7 @@ systemctl --user disable --now ipad-display
 rm ~/.config/systemd/user/ipad-display.service
 gnome-extensions disable ipad-display-helper@ysonggit.github.io
 rm -r ~/.local/share/gnome-shell/extensions/ipad-display-helper@ysonggit.github.io ~/.config/ipad-display
+rm ~/.local/share/applications/ipad-display.desktop ~/.local/share/icons/hicolor/scalable/apps/ipad-display.svg
 ```
 
 ## 已知限制

@@ -1,0 +1,45 @@
+#!/bin/sh
+# Applications-menu launcher for iPad Display.
+#   ipad-display-app          turn the iPad display on and show its top-bar menu (QR code, PIN)
+#   ipad-display-app --stop   turn it off
+RUN="${XDG_RUNTIME_DIR:-/tmp}/ipad-display"
+
+if [ "$1" = "--stop" ]; then
+    systemctl --user stop ipad-display.service
+    exit 0
+fi
+
+if ! systemctl --user start ipad-display.service; then
+    notify-send -i ipad-display "iPad Display" "无法启动 / could not start - journalctl --user -u ipad-display"
+    exit 1
+fi
+
+# Ask the top-bar menu (GNOME extension) to open itself; it deletes the file when it does.
+mkdir -p "$RUN" && touch "$RUN/open-menu"
+sleep 2
+[ -e "$RUN/open-menu" ] || exit 0
+
+# The extension is not loaded (yet): show the address and PIN as a notification instead.
+rm -f "$RUN/open-menu"
+i=0
+while [ $i -lt 8 ] && ! grep -q '"url": "' "$RUN/status.json" 2>/dev/null; do
+    sleep 1; i=$((i + 1))
+done
+MSG=$(python3 - "$RUN/status.json" <<'PY'
+import json, sys
+try:
+    s = json.load(open(sys.argv[1]))
+except (OSError, ValueError):
+    s = {}
+if s.get("clients"):
+    print("iPad 已连接 / iPad connected")
+elif s.get("waiting_usb"):
+    print("等待 USB 连接的 iPad / waiting for the iPad on USB")
+elif s.get("url"):
+    pin = f"\n配对码 PIN: {s['pin']}" if s.get("pin") else ""
+    print(f"在 iPad Safari 打开 / open in Safari:\n{s['url']}{pin}")
+else:
+    print("正在启动 / starting")
+PY
+)
+notify-send -i ipad-display "iPad 显示器已打开 / iPad display on" "$MSG"

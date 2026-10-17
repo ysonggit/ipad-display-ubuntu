@@ -1,0 +1,20 @@
+[Desktop Entry]
+Type=Application
+Name=iPad Display
+Name[zh_CN]=iPad 显示器
+GenericName=Second display
+GenericName[zh_CN]=第二块显示器
+Comment=Use an iPad as a second display, like Sidecar
+Comment[zh_CN]=把 iPad 当作第二块显示器,类似 Sidecar
+Exec=@APP@
+Icon=ipad-display
+Terminal=false
+Categories=Utility;
+Keywords=ipad;sidecar;display;monitor;screen;tablet;second;显示器;屏幕;
+StartupNotify=false
+Actions=stop;
+
+[Desktop Action stop]
+Name=Stop
+Name[zh_CN]=关闭
+Exec=@APP@ --stop

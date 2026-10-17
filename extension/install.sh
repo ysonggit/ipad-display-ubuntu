@@ -22,7 +22,17 @@ if [ -f "$UNITS/ipad-display-usb.service" ]; then
 fi
 systemctl --user daemon-reload
 
-# 3. default options (the menu changes them)
+# 3. applications-menu entry + icon
+APPS=$HOME/.local/share/applications
+ICONS=$HOME/.local/share/icons/hicolor/scalable/apps
+mkdir -p "$APPS" "$ICONS"
+cp "$REPO/data/ipad-display.svg" "$ICONS/ipad-display.svg"
+sed "s|@APP@|$REPO/ipad-display-app|" "$REPO/data/ipad-display.desktop" > "$APPS/ipad-display.desktop"
+chmod +x "$REPO/ipad-display-app"
+gtk-update-icon-cache -q -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
+update-desktop-database -q "$APPS" 2>/dev/null || true
+
+# 4. default options (the menu changes them)
 CONF=$HOME/.config/ipad-display
 if [ ! -f "$CONF/service.env" ]; then
     mkdir -p "$CONF"
@@ -30,7 +40,7 @@ if [ ! -f "$CONF/service.env" ]; then
         > "$CONF/service.env"
 fi
 
-# 4. enable the extension (works before the shell has seen it)
+# 5. enable the extension (works before the shell has seen it)
 python3 - "$UUID" <<'EOF'
 import ast, subprocess, sys
 uuid = sys.argv[1]
@@ -43,5 +53,5 @@ if uuid not in lst:
 EOF
 
 command -v qrencode >/dev/null || echo "tip: sudo apt install qrencode   (QR code in the menu)"
-echo "installed: top-bar menu + ipad-display.service"
+echo "installed: top-bar menu, applications-menu entry \"iPad Display\", ipad-display.service"
 echo "log out and back in once, then click the iPad icon in the top bar"
